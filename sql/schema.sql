@@ -577,8 +577,8 @@ CREATE TRIGGER trg_cascade_role_permissions
 CREATE OR REPLACE FUNCTION trg_purchase_to_stock()
 RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
-  INSERT INTO stock_ledger (item_id, weight, pcs, direction, source_type, reference_id, date, notes)
-  VALUES (NEW.item_id, NEW.weight, NEW.pcs, 'IN', 'purchase', NEW.id, NEW.date, 'Purchase: ' || COALESCE(NEW.invoice_no, ''));
+  INSERT INTO stock_ledger (item_id, weight, pcs, direction, source_type, reference_id, date, notes, huid)
+  VALUES (NEW.item_id, NEW.weight, NEW.pcs, 'IN', 'purchase', NEW.id, NEW.date, 'Purchase: ' || COALESCE(NEW.invoice_no, ''), NEW.huid);
   RETURN NEW;
 END;
 $$;
