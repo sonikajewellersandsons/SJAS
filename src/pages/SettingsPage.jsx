@@ -179,7 +179,8 @@ function BankDetailsTab() {
     const { data, error } = await supabase.from('settings').select('value').eq('key', 'bank_details').maybeSingle()
     if (error) { addToast('Failed to load bank details', 'error'); setLoading(false); return }
     if (data?.value) {
-      const b = typeof data.value === 'string' ? JSON.parse(data.value) : data.value
+      let b = {}
+    try { b = typeof data.value === 'string' ? JSON.parse(data.value) : data.value } catch { b = {} }
       setForm({
         bank_name: b.bank_name || '',
         account_holder: b.account_holder || '',

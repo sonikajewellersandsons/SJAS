@@ -49,10 +49,10 @@ function AppLayout() {
     { path: '/profile', label: 'Profile', icon: User },
   ]
 
-  function isActive(path) {
-    if (path === '/') return location.pathname === '/'
-    return location.pathname.startsWith(path)
-  }
+function isActive(path) {
+  if (path === '/') return location.pathname === '/'
+  return location.pathname === path || location.pathname.startsWith(path + '/')
+}
 
   return (
     <div className="app-layout">

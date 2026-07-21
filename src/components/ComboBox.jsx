@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, X } from 'lucide-react'
 
 export default function ComboBox({ options, value, onChange, placeholder = 'Select...', className = '' }) {
   const [open, setOpen] = useState(false)
@@ -15,7 +15,10 @@ export default function ComboBox({ options, value, onChange, placeholder = 'Sele
     : options
 
   useEffect(() => {
-    setHighlightIdx(i => Math.min(i, filtered.length - 1))
+    setHighlightIdx(i => {
+      if (filtered.length === 0) return 0
+      return Math.min(i, filtered.length - 1)
+    })
   }, [filtered.length])
 
   useEffect(() => {
@@ -33,6 +36,14 @@ export default function ComboBox({ options, value, onChange, placeholder = 'Sele
     onChange(opt.value)
     setOpen(false)
     setSearch('')
+    inputRef.current?.focus()
+  }
+
+  function handleClear(e) {
+    e.stopPropagation()
+    onChange('')
+    setSearch('')
+    setOpen(false)
     inputRef.current?.focus()
   }
 
@@ -58,6 +69,16 @@ export default function ComboBox({ options, value, onChange, placeholder = 'Sele
     }
   }
 
+  function handleFocus() {
+    if (selected) setSearch(selected.label)
+    setOpen(true)
+  }
+
+  function handleInputChange(e) {
+    setSearch(e.target.value)
+    if (!open) setOpen(true)
+  }
+
   return (
     <div className="combobox" ref={containerRef}>
       <div className="combobox-trigger">
@@ -66,10 +87,15 @@ export default function ComboBox({ options, value, onChange, placeholder = 'Sele
           className={`input combobox-input ${className}`}
           value={open ? search : (selected?.label || value || '')}
           placeholder={placeholder}
-          onChange={e => { setSearch(e.target.value); if (!open) setOpen(true) }}
-          onFocus={() => setOpen(true)}
+          onChange={handleInputChange}
+          onFocus={handleFocus}
           onKeyDown={handleKeyDown}
         />
+        {selected && (
+          <button type="button" className="combobox-clear" onClick={handleClear} tabIndex={-1}>
+            <X size={14} />
+          </button>
+        )}
         <ChevronDown size={16} className="combobox-chevron" />
       </div>
       {open && (

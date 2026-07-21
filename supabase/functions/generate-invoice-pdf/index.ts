@@ -40,20 +40,11 @@ function stateCode(name: string): string {
 // Indian number to words (Lakh/Crore system)
 function amountInWords(n: number): string {
   if (n <= 0) return 'Zero Only'
-  const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen']
-  const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety']
-
-  function wordsBelow1000(num: number): string {
-    if (num === 0) return ''
-    if (num < 20) return ones[num]
-    if (num < 100) return tens[Math.floor(num / 10)] + (num % 10 !== 0 ? ' ' + ones[num % 10] : '')
-    return ones[Math.floor(num / 100)] + ' Hundred' + (num % 100 !== 0 ? ' ' + wordsBelow1000(num % 100) : '')
-  }
-
   const num = Math.round(n * 100) / 100
   let rupees = Math.floor(num)
   let paise = Math.round((num - rupees) * 100)
   if (paise >= 100) { rupees += 1; paise = 0 }
+  if (rupees === 0 && paise === 0) return 'Zero Only'
 
   let result = ''
   if (rupees > 0) {
@@ -86,6 +77,7 @@ function fmtWt(n: number | string | null | undefined): string {
 function fmtDate(d: string): string {
   if (!d) return ''
   const dt = new Date(d + 'T00:00:00')
+  if (isNaN(dt.getTime())) return ''
   const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
   return dt.getDate() + '-' + months[dt.getMonth()] + '-' + String(dt.getFullYear()).slice(-2)
 }
@@ -231,49 +223,49 @@ ${Number(inv.round_off) !== 0 ? `<tr class="subrow"><td></td><td class="r i">Rou
 <style>
 @page { margin: 7mm; }
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: Arial, Helvetica, sans-serif; font-size: 12px; color: #222; background: #e5e5e5; padding: 20px 0; }
+body { font-family: Arial, Helvetica, sans-serif; font-size: 13px; color: #222; background: #e5e5e5; padding: 5px 0; }
 .invoice { width: 100%; max-width: 210mm; margin: 0 auto; border: 1px solid #bbb; page-break-after: always; position: relative; }
 table { width: 100%; border-collapse: collapse; }
-td, th { border: 0.5px solid #bbb; padding: 5px 6px; vertical-align: top; }
+td, th { border: 0.5px solid #bbb; padding: 4px 5px; vertical-align: top; }
 th { background: #ddd; font-weight: 700; text-align: center; white-space: nowrap; color: #222; font-size: 11px; }
 .l { text-align: left; } .r { text-align: right; } .c { text-align: center; }
 .b { font-weight: 700; } .i { font-style: italic; }
-.sm { font-size: 10px; color: #555; }
+.sm { font-size: 11px; color: #555; }
 .muted { color: #666; }
-.rl { color: #666; font-size: 10px; }
+.rl { color: #666; font-size: 11px; }
 
 /* Header */
 .hdr { display: flex; align-items: center; padding: 0; border-bottom: 1px solid #bbb; }
-.hdr .logo { width: 102px; height: 102px; margin: -29px 16px -29px 0; flex-shrink: 0; }
-.hdr .shop-info { flex: 1; text-align: left; padding: 10px 0; }
+.hdr .logo { width: 85px; height: 85px; margin: -25px 12px -25px 0; flex-shrink: 0; }
+.hdr .shop-info { flex: 1; text-align: left; padding: 8px 0; }
 .hdr .name { font-size: 22px; font-weight: 700; color: #111; letter-spacing: 1px; }
 .hdr .addr { font-size: 11px; color: #555; margin-top: 3px; }
 .title-row { text-align: center; padding: 4px 0; border-bottom: 1px solid #bbb; }
-.title-row .t { font-size: 15px; font-weight: 700; letter-spacing: 4px; text-transform: uppercase; color: #222; }
+.title-row .t { font-size: 16px; font-weight: 700; letter-spacing: 4px; text-transform: uppercase; color: #222; }
 
 /* Seller / Buyer blocks */
 .seller { font-size: 11px; padding: 6px 8px; }
-.seller .sn { font-size: 14px; }
+.seller .sn { font-size: 15px; }
 .buyer { font-size: 11px; padding: 6px 8px; }
-.buyer .bl { font-size: 10px; color: #555; }
+.buyer .bl { font-size: 11px; color: #555; }
 
 /* Table rows */
 .lines { page-break-inside: auto; }
 .lines thead { display: table-header-group; }
 .lines tr { page-break-inside: avoid; }
-.datarow td { padding: 4px 6px; font-size: 11px; border-top: none; border-bottom: none; }
-.subrow td { padding: 3px 6px; font-size: 10px; border-top: none; border-bottom: none; color: #444; }
+.datarow td { padding: 3px 5px; font-size: 11px; border-top: none; border-bottom: none; }
+.subrow td { padding: 1px 5px; font-size: 10px; border-top: none; border-bottom: none; color: #444; }
 .subrow td:first-child { border-left: none; }
 .subrow td:last-child { border-right: none; }
-.hm-gap td { padding-top: 9px; }
-.totalrow td { padding: 5px 6px; font-weight: 700; font-size: 13px; border-top: 2px solid #444; border-bottom: none; }
+.hm-gap td { padding-top: 10px; }
+.totalrow td { padding: 4px 5px; font-weight: 700; font-size: 12px; border-top: 2px solid #444; border-bottom: none; }
 
 /* Bottom sections */
-.words { font-size: 11px; line-height: 1.4; }
-.hsn-tbl { font-size: 9px; }
+.words { font-size: 11px; line-height: 1.3; }
+.hsn-tbl { font-size: 10px; }
 .footer { font-size: 10px; color: #555; }
-.sig { padding: 10px 8px 6px; }
-.bot { text-align: center; font-size: 10px; color: #444; font-style: italic; padding: 6px; border-top: 1px solid #bbb; line-height: 1.6; }
+.sig { padding: 4px 8px 2px; }
+.bot { text-align: center; font-size: 10px; color: #444; font-style: italic; padding: 4px; border-top: 1px solid #bbb; line-height: 1.4; }
 </style></head><body>
 <div class="invoice">
 
@@ -365,14 +357,14 @@ ${summaryRows}
       <td></td><td class="r">&#8377;${fmt(isInterState ? 0 : inv.tax_total / 2)}</td>
     </tr>
     <tr><td colspan="8" style="padding: 0; border: none;">
-      <table style="width: 100%; font-size: 9px; border-collapse: collapse; border: 0.5px solid #444;">
+          <table style="width: 100%; font-size: 10px; border-collapse: collapse; border: 0.5px solid #444;">
         <tr>
-          <th style="width: 50%; font-size: 9px; padding: 4px 6px; background: #ddd;">Amount Chargeable (in words) <span class="muted" style="font-size: 8px;">E. &amp; O.E.</span></th>
-          <th style="width: 50%; font-size: 9px; padding: 4px 6px; background: #ddd;">Tax Amount (in words)</th>
+          <th style="width: 50%; font-size: 10px; padding: 4px 6px; background: #ddd;">Amount Chargeable (in words) <span class="muted" style="font-size: 8px;">E. &amp; O.E.</span></th>
+          <th style="width: 50%; font-size: 10px; padding: 4px 6px; background: #ddd;">Tax Amount (in words)</th>
         </tr>
         <tr>
-          <td style="padding: 4px 6px; text-align: center; font-weight: 700; font-size: 10px;">${amountInWords(Number(inv.grand_total))}</td>
-          <td style="padding: 4px 6px; text-align: center; font-weight: 700; font-size: 10px;">${amountInWords(Number(inv.tax_total))}</td>
+          <td style="padding: 4px 6px; text-align: center; font-weight: 700; font-size: 11px;">${amountInWords(Number(inv.grand_total))}</td>
+          <td style="padding: 4px 6px; text-align: center; font-weight: 700; font-size: 11px;">${amountInWords(Number(inv.tax_total))}</td>
         </tr>
       </table>
     </td></tr>
@@ -382,20 +374,20 @@ ${summaryRows}
 <!-- Company Info + Bank Details + Payment -->
 <table class="footer"><tr>
 <td style="width: 100%; border: none; padding: 6px 8px; vertical-align: top;">
-  <div style="margin-top: 16px;"><span style="font-weight: 700; font-size: 13px;">Bank Details</span></div>
-  <table style="width: auto; font-size: 10px; border-collapse: collapse;">
-    <tr><td style="border: 0.5px solid #bbb; padding: 2px 4px; white-space: nowrap; font-weight: 700;">Bank</td><td style="border: 0.5px solid #bbb; padding: 2px 4px;">${esc(bankName)}</td></tr>
-    <tr><td style="border: 0.5px solid #bbb; padding: 2px 4px; white-space: nowrap; font-weight: 700;">A/c Type</td><td style="border: 0.5px solid #bbb; padding: 2px 4px;">${esc(bankAcType)}</td></tr>
-    <tr><td style="border: 0.5px solid #bbb; padding: 2px 4px; white-space: nowrap; font-weight: 700;">A/c Holder</td><td style="border: 0.5px solid #bbb; padding: 2px 4px;">${esc(bankAcHolder)}</td></tr>
-    <tr><td style="border: 0.5px solid #bbb; padding: 2px 4px; white-space: nowrap; font-weight: 700;">A/c No.</td><td style="border: 0.5px solid #bbb; padding: 2px 4px;">${esc(bankAcNo)}</td></tr>
-    <tr><td style="border: 0.5px solid #bbb; padding: 2px 4px; white-space: nowrap; font-weight: 700;">Branch</td><td style="border: 0.5px solid #bbb; padding: 2px 4px;">${esc(bankBranch).replace(', Sec-16', ',<br>Sec-16')}</td></tr>
-    <tr><td style="border: 0.5px solid #bbb; padding: 2px 4px; white-space: nowrap; font-weight: 700;">IFSC</td><td style="border: 0.5px solid #bbb; padding: 2px 4px;">${esc(bankIfsc)}</td></tr>
-    ${shopPan ? `<tr><td style="border: 0.5px solid #bbb; padding: 2px 4px; white-space: nowrap; font-weight: 700;">Pan No.</td><td style="border: 0.5px solid #bbb; padding: 2px 4px;">${esc(shopPan)}</td></tr>` : ''}
+  <div style="margin-top: 12px;"><span style="font-weight: 700; font-size: 12px;">Bank Details</span></div>
+  <table style="width: auto; font-size: 11px; border-collapse: collapse;">
+    <tr><td style="border: 0.5px solid #bbb; padding: 2px 5px; white-space: nowrap; font-weight: 700;">Bank</td><td style="border: 0.5px solid #bbb; padding: 2px 5px;">${esc(bankName)}</td></tr>
+    <tr><td style="border: 0.5px solid #bbb; padding: 2px 5px; white-space: nowrap; font-weight: 700;">A/c Type</td><td style="border: 0.5px solid #bbb; padding: 2px 5px;">${esc(bankAcType)}</td></tr>
+    <tr><td style="border: 0.5px solid #bbb; padding: 2px 5px; white-space: nowrap; font-weight: 700;">A/c Holder</td><td style="border: 0.5px solid #bbb; padding: 2px 5px;">${esc(bankAcHolder)}</td></tr>
+    <tr><td style="border: 0.5px solid #bbb; padding: 2px 5px; white-space: nowrap; font-weight: 700;">A/c No.</td><td style="border: 0.5px solid #bbb; padding: 2px 5px;">${esc(bankAcNo)}</td></tr>
+    <tr><td style="border: 0.5px solid #bbb; padding: 2px 5px; white-space: nowrap; font-weight: 700;">Branch</td><td style="border: 0.5px solid #bbb; padding: 2px 5px;">${esc(bankBranch).replace(', Sec-16', ',<br>Sec-16')}</td></tr>
+    <tr><td style="border: 0.5px solid #bbb; padding: 2px 5px; white-space: nowrap; font-weight: 700;">IFSC</td><td style="border: 0.5px solid #bbb; padding: 2px 5px;">${esc(bankIfsc)}</td></tr>
+    ${shopPan ? `<tr><td style="border: 0.5px solid #bbb; padding: 2px 5px; white-space: nowrap; font-weight: 700;">Pan No.</td><td style="border: 0.5px solid #bbb; padding: 2px 5px;">${esc(shopPan)}</td></tr>` : ''}
   </table>
   <table style="width: 100%; border: none; border-collapse: collapse;">
     <tr>
       <td style="border: none; padding: 0; vertical-align: top; width: 33.33%; white-space: nowrap;">
-        <div style="margin-top: 16px;"><span style="font-weight: 700; font-size: 13px;">Payment Mode:</span></div>
+        <div style="margin-top: 12px;"><span style="font-weight: 700; font-size: 12px;">Payment Mode:</span></div>
         <div style="font-size: 12px; margin-top: 2px;">${paySummary()}</div>
       </td>
       <td style="border: none; padding: 0; width: 33.33%;"></td>
@@ -403,6 +395,7 @@ ${summaryRows}
     </tr>
   </table>
 </td>
+</tr></table>
 
     <!-- Floating stamp + signature — positioned relative to .invoice -->
     <div style="position: absolute; bottom: 30px; right: -4px; width: 220px; height: 180px; z-index: -1; pointer-events: none;">
@@ -447,7 +440,8 @@ serve(async (req) => {
   if (authErr || !user) return new Response('Unauthorized', { status: 401, headers: CORS_HEADERS })
 
   try {
-    const { invoiceId } = await req.json()
+    const body = await req.json()
+    const invoiceId = Number(body.invoiceId)
     if (!invoiceId) return new Response('Missing invoiceId', { status: 400, headers: CORS_HEADERS })
 
     const [invArr, settingsArr] = await Promise.all([

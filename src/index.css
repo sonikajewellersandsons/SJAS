@@ -316,6 +316,8 @@ tbody tr:last-child td { border-bottom: none; }
 .combobox-trigger { position: relative; cursor: pointer; }
 .combobox-input { padding-right: 2rem !important; cursor: pointer; }
 .combobox-chevron { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--text-muted); pointer-events: none; }
+.combobox-clear { position: absolute; right: 28px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; padding: 2px; border-radius: 4px; z-index: 1; }
+.combobox-clear:hover { color: var(--text-secondary); background: var(--bg-secondary); }
 .combobox-dropdown {
   position: absolute; top: 100%; left: 0; right: 0; z-index: 100;
   background: var(--bg-card); border: 1px solid var(--border-strong);

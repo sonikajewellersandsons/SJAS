@@ -17,10 +17,12 @@ export default function CustomersPage() {
 
   async function loadCustomers() {
     setLoading(true)
-    const { data, error } = await supabase.from('customers').select('*').order('name')
-    if (error) addToast('Failed to load customers', 'error')
-    setCustomers(data || [])
-    setLoading(false)
+    try {
+      const { data, error } = await supabase.from('customers').select('*').order('name')
+      if (error) addToast('Failed to load customers', 'error')
+      setCustomers(data || [])
+    } catch (err) { addToast('Failed to load customers', 'error') }
+    finally { setLoading(false) }
   }
 
   function resetForm() {
@@ -42,7 +44,6 @@ export default function CustomersPage() {
     const cleanedPhone = form.phone.trim().replace(/^\+91\s*/, '').replace(/\D/g, '')
     if (cleanedPhone.length !== 10) { addToast('Phone must be exactly 10 digits', 'error'); return }
     if (!form.address.trim()) { addToast('Address is required', 'error'); return }
-    if (!form.pincode.trim()) { addToast('Pincode is required', 'error'); return }
     const payload = { ...form, name: form.name.trim(), phone: cleanedPhone }
     if (editing) {
       const { error } = await supabase.from('customers').update(payload).eq('id', editing)
@@ -69,7 +70,7 @@ export default function CustomersPage() {
 
   const filtered = customers.filter(c =>
     c.name.toLowerCase().includes(search.toLowerCase()) ||
-    c.phone.includes(search) ||
+    c.phone?.includes(search) ||
     c.address?.toLowerCase().includes(search.toLowerCase())
   )
 

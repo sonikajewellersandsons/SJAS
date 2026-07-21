@@ -54,7 +54,7 @@ export default function SalesPage() {
     const s = search.toLowerCase()
     const inv = it.invoices || {}
     const item = it.item_master || {}
-    if (s && !inv.inv_no?.toLowerCase().includes(s) && !item.name?.toLowerCase().includes(s) && !(it.huid_code || '').toLowerCase().includes(s)) return false
+    if (s && !inv.inv_no?.toLowerCase().includes(s) && !item.name?.toLowerCase().includes(s) && !(it.huid_code || '').toLowerCase().includes(s) && !(Number(it.weight) || 0).toFixed(3).includes(s)) return false
     if ((dateFrom || dateTo) && !inv.date) return false
     if (dateFrom && inv.date < dateFrom) return false
     if (dateTo && inv.date > dateTo) return false

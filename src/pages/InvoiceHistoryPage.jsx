@@ -35,9 +35,11 @@ export default function InvoiceHistoryPage() {
 
   async function loadInvoices() {
     setLoading(true)
-    const { data, error } = await supabase.from('invoices').select('*').order('created_at', { ascending: false }).limit(1000)
-    if (error) { addToast('Failed to load invoices', 'error') } else if (data) { setInvoices(data) }
-    setLoading(false)
+    try {
+      const { data, error } = await supabase.from('invoices').select('*').order('created_at', { ascending: false }).limit(1000)
+      if (error) { addToast('Failed to load invoices', 'error') } else if (data) { setInvoices(data) }
+    } catch (err) { addToast('Failed to load invoices', 'error') }
+    finally { setLoading(false) }
   }
 
   async function viewDetails(inv) {
@@ -68,55 +70,34 @@ export default function InvoiceHistoryPage() {
   async function printInvoice(inv) {
     addToast('Generating invoice…', 'info')
     setPrintLoading(true)
-    const w = window.open('', '_blank')
-    if (!w) {
-      addToast('Please allow popups to print', 'warning')
-      setPrintLoading(false)
-      return
-    }
-    w.document.write('<!DOCTYPE html><html><head><title>Loading…</title></head><body></body></html>')
     try {
       const sess = await supabase.auth.getSession()
       const token = sess?.data?.session?.access_token
-      if (!token) { addToast('Not authenticated', 'error'); setPrintLoading(false); w.close(); return }
+      if (!token) { addToast('Not authenticated', 'error'); setPrintLoading(false); return }
       const res = await fetch(FUNCTIONS_URL + '/generate-invoice-pdf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
         body: JSON.stringify({ invoiceId: inv.id })
       })
-      if (!res.ok) { addToast('Failed to generate PDF', 'error'); setPrintLoading(false); w.close(); return }
-      const html = await res.text()
-      w.document.write(html)
-      w.document.close()
-
-      // Wait for popup content (including embedded SVG images) to fully render
-      await new Promise(resolve => {
-        if (w.document.readyState === 'complete') {
-          setTimeout(resolve, 300)
-        } else {
-          w.addEventListener('load', () => setTimeout(resolve, 300), { once: true })
-        }
-      })
-
-      // Measure actual content height and inject dynamic page size
-      const invoiceEl = w.document.querySelector('.invoice')
-      if (invoiceEl) {
-        const contentHeightPx = Math.ceil(invoiceEl.getBoundingClientRect().height)
-        const contentHeightMm = (contentHeightPx / 96) * 25.4
-        const finalHeightMm = Math.max(120, Math.ceil(contentHeightMm + 5))
-        const styleOverride = w.document.createElement('style')
-        styleOverride.textContent = `@page { size: 210mm ${finalHeightMm}mm; margin: 7mm; }`
-        w.document.head.appendChild(styleOverride)
-      }
-
-      setTimeout(() => {
+      if (!res.ok) {
+        const errText = await res.text()
+        addToast('PDF error (' + res.status + '): ' + errText, 'error')
         setPrintLoading(false)
-        w.print()
-      }, 200)
+        return
+      }
+      const html = await res.text()
+      const blob = new Blob([html], { type: 'text/html' })
+      const url = URL.createObjectURL(blob)
+      const w = window.open(url, '_blank')
+      if (!w) {
+        addToast('Please allow popups to print', 'warning')
+        setPrintLoading(false)
+        return
+      }
+      setPrintLoading(false)
     } catch (e) {
       addToast('Failed to generate PDF', 'error')
       setPrintLoading(false)
-      w.close()
     }
   }
 

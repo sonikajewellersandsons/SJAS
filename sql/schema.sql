@@ -108,6 +108,7 @@ ALTER TABLE stock_ledger ADD COLUMN IF NOT EXISTS huid BOOLEAN;
 
 CREATE INDEX IF NOT EXISTS idx_stock_ledger_item ON stock_ledger(item_id);
 CREATE INDEX IF NOT EXISTS idx_stock_ledger_date ON stock_ledger(date);
+CREATE INDEX IF NOT EXISTS idx_stock_ledger_source_ref ON stock_ledger(source_type, reference_id);
 
 -- ─── PURCHASES ─────────────────────────────────────────
 
@@ -133,6 +134,11 @@ ALTER TABLE purchases ADD COLUMN IF NOT EXISTS huid BOOLEAN NOT NULL DEFAULT tru
 ALTER TABLE purchases ADD COLUMN IF NOT EXISTS is_sold BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE purchases ADD COLUMN IF NOT EXISTS sold_inv_no TEXT DEFAULT '';
 ALTER TABLE purchases ADD COLUMN IF NOT EXISTS sold_pcs INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE purchases DROP CONSTRAINT IF EXISTS chk_sold_pcs;
+ALTER TABLE purchases ADD CONSTRAINT chk_sold_pcs CHECK (sold_pcs <= pcs);
+
+CREATE INDEX IF NOT EXISTS idx_purchases_item_id ON purchases(item_id);
 
 -- ─── INWARD SUPPLY VOUCHERS ────────────────────────────
 -- Exchange/trade-in: customer brings old items, shop values them,
@@ -181,7 +187,7 @@ CREATE TABLE IF NOT EXISTS invoices (
   adj_amount      NUMERIC(10,2) NOT NULL DEFAULT 0,
   discount        NUMERIC(10,2) NOT NULL DEFAULT 0,
   grand_total     NUMERIC(12,2) NOT NULL DEFAULT 0,
-  payment_mode    TEXT DEFAULT 'Cash',
+  payment_mode    TEXT DEFAULT 'CASH',
   cash_amt        NUMERIC(12,2) NOT NULL DEFAULT 0,
   bank_amt        NUMERIC(12,2) NOT NULL DEFAULT 0,
   irn             TEXT DEFAULT '',
@@ -208,12 +214,15 @@ ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS huid BOOLEAN NOT NULL DEFAULT
 ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS huid_code TEXT DEFAULT '';
 ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS tax_pct NUMERIC(5,2) NOT NULL DEFAULT 3;
 ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS labour_rate NUMERIC(10,2) NOT NULL DEFAULT 0;
+ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS labour_pct NUMERIC(5,2) NOT NULL DEFAULT 10;
 
 ALTER TABLE invoices ADD COLUMN IF NOT EXISTS gold_rate NUMERIC(10,2) NOT NULL DEFAULT 0;
 ALTER TABLE invoices ADD COLUMN IF NOT EXISTS round_off NUMERIC(10,2) NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_invoices_date ON invoices(date);
 CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON invoice_items(invoice_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_items_item_id ON invoice_items(item_id);
+CREATE INDEX IF NOT EXISTS idx_invoices_customer_id ON invoices(customer_id);
 
 -- ─── DIAMOND ITEMS ─────────────────────────────────────
 
@@ -310,7 +319,7 @@ ON CONFLICT (key) DO NOTHING;
 
 -- Get current financial year string (e.g. '2026-27')
 CREATE OR REPLACE FUNCTION get_financial_year(p_date DATE DEFAULT CURRENT_DATE)
-RETURNS TEXT LANGUAGE SQL IMMUTABLE AS $$
+RETURNS TEXT LANGUAGE SQL STABLE AS $$
   SELECT
     CASE
       WHEN EXTRACT(MONTH FROM p_date) >= 4
@@ -360,18 +369,21 @@ $$;
 -- Get individual stock lots (purchases only — inward supply is not stock)
 DROP FUNCTION IF EXISTS get_stock_lots();
 CREATE OR REPLACE FUNCTION get_stock_lots()
-RETURNS TABLE(lot_id BIGINT, item_name TEXT, purity TEXT, huid BOOLEAN, weight NUMERIC, pcs INTEGER, ref_date DATE, status TEXT, sale_inv_no TEXT)
+RETURNS TABLE(lot_id BIGINT, item_name TEXT, purity TEXT, huid BOOLEAN, weight NUMERIC, orig_pcs INTEGER, sold_pcs INTEGER, avail_pcs INTEGER, ref_date DATE, status TEXT, sale_inv_no TEXT)
 LANGUAGE SQL STABLE AS $$
   SELECT
     p.id, im.name, p.purity, p.huid, p.weight,
-    p.pcs - p.sold_pcs,
+    p.pcs, p.sold_pcs, p.pcs - p.sold_pcs,
     p.date,
-    CASE WHEN p.sold_pcs >= p.pcs THEN 'Sold' ELSE 'Available' END,
+    CASE
+      WHEN p.sold_pcs = 0 THEN 'Available'
+      WHEN p.sold_pcs < p.pcs THEN 'Partial'
+      ELSE 'Sold'
+    END,
     COALESCE(p.sold_inv_no, '')
   FROM purchases p
   JOIN item_master im ON im.id = p.item_id
-  WHERE p.pcs - p.sold_pcs > 0
-  ORDER BY 6 DESC, 1 DESC;
+  ORDER BY 8 DESC, p.id DESC;
 $$;
 
 -- Get next invoice sequence number
@@ -424,7 +436,7 @@ BEGIN
   FOR r IN SELECT item_id, weight, huid FROM invoice_items WHERE invoice_id = p_invoice_id
   LOOP
     -- Skip if stock_ledger already has an OUT entry for this exact item+weight+huid (idempotent)
-    IF EXISTS (SELECT 1 FROM stock_ledger WHERE source_type = 'sale' AND reference_id = p_invoice_id AND item_id = r.item_id AND weight = r.weight AND huid = r.huid) THEN
+    IF EXISTS (SELECT 1 FROM stock_ledger WHERE source_type = 'sale' AND reference_id = p_invoice_id AND item_id = r.item_id AND weight = r.weight AND huid IS NOT DISTINCT FROM r.huid) THEN
       CONTINUE;
     END IF;
 
@@ -435,7 +447,7 @@ BEGIN
         sold_inv_no = CASE WHEN sold_inv_no = '' THEN v_inv_no ELSE sold_inv_no || ', ' || v_inv_no END
     WHERE id = (
       SELECT id FROM purchases
-      WHERE item_id = r.item_id AND weight = r.weight AND huid = r.huid AND sold_pcs < pcs
+      WHERE item_id = r.item_id AND weight = r.weight AND huid IS NOT DISTINCT FROM r.huid AND sold_pcs < pcs
       ORDER BY id ASC
       LIMIT 1
     );
@@ -451,7 +463,7 @@ BEGIN
   FROM invoice_items WHERE invoice_id = p_invoice_id
     AND NOT EXISTS (
       SELECT 1 FROM stock_ledger
-      WHERE source_type = 'sale' AND reference_id = p_invoice_id AND item_id = invoice_items.item_id AND weight = invoice_items.weight AND huid = invoice_items.huid
+      WHERE source_type = 'sale' AND reference_id = p_invoice_id AND item_id = invoice_items.item_id AND weight = invoice_items.weight AND huid IS NOT DISTINCT FROM invoice_items.huid
     );
 END;
 $$;
@@ -478,7 +490,7 @@ BEGIN
     WHERE item_id = r.item_id
       AND sold_pcs > 0
       AND weight = r.weight
-      AND huid = r.huid;
+      AND huid IS NOT DISTINCT FROM r.huid;
 
   END LOOP;
 
@@ -735,9 +747,7 @@ CREATE POLICY inward_supply_write ON inward_supply_vouchers FOR INSERT WITH CHEC
 CREATE POLICY inward_supply_update ON inward_supply_vouchers FOR UPDATE USING (
   has_permission('allow_billing')
 );
-CREATE POLICY inward_supply_delete ON inward_supply_vouchers FOR DELETE USING (
-  has_permission('allow_billing')
-);
+DROP POLICY IF EXISTS inward_supply_delete ON inward_supply_vouchers;
 
 -- Invoices: read/write/update/delete for allow_billing
 CREATE POLICY invoices_read ON invoices FOR SELECT USING (
@@ -749,9 +759,7 @@ CREATE POLICY invoices_write ON invoices FOR INSERT WITH CHECK (
 CREATE POLICY invoices_update ON invoices FOR UPDATE USING (
   has_permission('allow_billing')
 );
-CREATE POLICY invoices_delete ON invoices FOR DELETE USING (
-  has_permission('allow_billing')
-);
+DROP POLICY IF EXISTS invoices_delete ON invoices;
 
 -- Invoice items: same as invoices
 CREATE POLICY invoice_items_read ON invoice_items FOR SELECT USING (

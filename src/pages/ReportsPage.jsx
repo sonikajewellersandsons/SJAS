@@ -66,34 +66,36 @@ function useMonthlyData(year) {
     let cancelled = false
     setLoading(true)
     ;(async () => {
-      const { data: settings } = await supabase.from('settings').select('value').eq('key', 'shop_state').maybeSingle()
-      const shopState = (settings?.value || '').toLowerCase().replace(/^"|"$/g, '') || 'delhi'
-      const { data, error } = await supabase
-        .from('invoices')
-        .select('date, grand_total, tax_total, customer_state, subtotal, hallmark_total')
-        .gte('date', fyStart)
-        .lte('date', fyEnd)
-        .order('date')
-      if (cancelled) return
-      if (error) { setLoading(false); return }
-      const byMonth = {}
-      for (const inv of (data || [])) {
-        const m = inv.date ? inv.date.slice(0, 7) : 'unknown'
-        if (!byMonth[m]) byMonth[m] = { sales: 0, tax: 0, count: 0, intra: 0, inter: 0, taxable: 0, hallmark: 0 }
-        byMonth[m].sales += parseFloat(inv.grand_total) || 0
-        byMonth[m].tax += parseFloat(inv.tax_total) || 0
-        byMonth[m].count++
-        byMonth[m].taxable += parseFloat(inv.subtotal) || 0
-        byMonth[m].hallmark += parseFloat(inv.hallmark_total) || 0
-        if ((inv.customer_state || '').toLowerCase() === shopState) {
-          byMonth[m].intra += parseFloat(inv.subtotal) || 0
-        } else {
-          byMonth[m].inter += parseFloat(inv.subtotal) || 0
+      try {
+        const { data: settings } = await supabase.from('settings').select('value').eq('key', 'shop_state').maybeSingle()
+        const shopState = (settings?.value || '').toLowerCase().replace(/^"|"$/g, '') || 'delhi'
+        const { data, error } = await supabase
+          .from('invoices')
+          .select('date, grand_total, tax_total, customer_state, subtotal, hallmark_total')
+          .gte('date', fyStart)
+          .lte('date', fyEnd)
+          .order('date')
+        if (cancelled) return
+        if (error) { setLoading(false); return }
+        const byMonth = {}
+        for (const inv of (data || [])) {
+          const m = inv.date ? inv.date.slice(0, 7) : 'unknown'
+          if (!byMonth[m]) byMonth[m] = { sales: 0, tax: 0, count: 0, intra: 0, inter: 0, taxable: 0, hallmark: 0 }
+          byMonth[m].sales += parseFloat(inv.grand_total) || 0
+          byMonth[m].tax += parseFloat(inv.tax_total) || 0
+          byMonth[m].count++
+          byMonth[m].taxable += parseFloat(inv.subtotal) || 0
+          byMonth[m].hallmark += parseFloat(inv.hallmark_total) || 0
+          if ((inv.customer_state || '').toLowerCase() === shopState) {
+            byMonth[m].intra += parseFloat(inv.subtotal) || 0
+          } else {
+            byMonth[m].inter += parseFloat(inv.subtotal) || 0
+          }
         }
-      }
-      const result = Object.entries(byMonth).sort((a, b) => a[0].localeCompare(b[0])).map(([m, d]) => ({ month: m, ...d }))
-      setMonths(result)
-      setLoading(false)
+        const result = Object.entries(byMonth).sort((a, b) => a[0].localeCompare(b[0])).map(([m, d]) => ({ month: m, ...d }))
+        setMonths(result)
+      } catch (err) { if (!cancelled) addToast('Failed to load report data', 'error') }
+      finally { if (!cancelled) setLoading(false) }
     })()
     return () => { cancelled = true }
   }, [year])
@@ -423,12 +425,13 @@ function CustomerReport({ year, addToast }) {
 
   useEffect(() => {
     setLoading(true)
-    supabase
-      .from('invoices')
-      .select('customer_name, customer_phone, customer_state, customer_gstin, grand_total, subtotal')
-      .gte('date', fyStart)
-      .lte('date', fyEnd)
-      .then(({ data: invoices }) => {
+    ;(async () => {
+      try {
+        const { data: invoices } = await supabase
+          .from('invoices')
+          .select('customer_name, customer_phone, customer_state, customer_gstin, grand_total, subtotal')
+          .gte('date', fyStart)
+          .lte('date', fyEnd)
         const byCust = {}
         for (const inv of (invoices || [])) {
           const key = inv.customer_name
@@ -438,8 +441,9 @@ function CustomerReport({ year, addToast }) {
         }
         const arr = Object.values(byCust).sort((a, b) => b.total - a.total)
         setData(arr)
-        setLoading(false)
-      })
+      } catch (err) { addToast('Failed to load customer report', 'error') }
+      finally { setLoading(false) }
+    })()
   }, [year])
 
   if (loading) return <div className="loading-center"><div className="spinner" /></div>
@@ -514,51 +518,53 @@ function OthersReport({ year, addToast }) {
   useEffect(() => {
     setLoading(true)
     ;(async () => {
-      const { data: shopSetting } = await supabase.from('settings').select('value').eq('key', 'shop_state').maybeSingle()
-      const shopState = (shopSetting?.value || '').toLowerCase().replace(/^"|"$/g, '') || 'delhi'
-      const { data: invoices } = await supabase.from('invoices').select('id, payment_mode, cash_amt, bank_amt, grand_total, date, customer_state').gte('date', fyStart).lte('date', fyEnd)
+      try {
+        const { data: shopSetting } = await supabase.from('settings').select('value').eq('key', 'shop_state').maybeSingle()
+        const shopState = (shopSetting?.value || '').toLowerCase().replace(/^"|"$/g, '') || 'delhi'
+        const { data: invoices } = await supabase.from('invoices').select('id, payment_mode, cash_amt, bank_amt, grand_total, date, customer_state').gte('date', fyStart).lte('date', fyEnd)
 
-      // Payment mode
-      const byPay = { CASH: 0, 'E-BANKING': 0, BOTH: 0 }
-      for (const inv of (invoices || [])) {
-        const mode = inv.payment_mode || 'CASH'
-        byPay[mode] = (byPay[mode] || 0) + (parseFloat(inv.grand_total) || 0)
-      }
-      setPayData(Object.entries(byPay).filter(([, v]) => v > 0).map(([k, v]) => ({ mode: k, total: v })))
-
-      // Monthly outward supply summary
-      const byMonth = {}
-      for (const inv of (invoices || [])) {
-        const m = inv.date ? inv.date.slice(0, 7) : 'unknown'
-        if (!byMonth[m]) byMonth[m] = { count: 0, total: 0, intra: 0, inter: 0 }
-        byMonth[m].count++
-        byMonth[m].total += parseFloat(inv.grand_total) || 0
-        if ((inv.customer_state || '').toLowerCase() === shopState) {
-          byMonth[m].intra++
-        } else {
-          byMonth[m].inter++
+        // Payment mode
+        const byPay = { CASH: 0, 'E-BANKING': 0, BOTH: 0 }
+        for (const inv of (invoices || [])) {
+          const mode = inv.payment_mode || 'CASH'
+          byPay[mode] = (byPay[mode] || 0) + (parseFloat(inv.grand_total) || 0)
         }
-      }
-      setSupplyData(byMonth)
+        setPayData(Object.entries(byPay).filter(([, v]) => v > 0).map(([k, v]) => ({ mode: k, total: v })))
 
-      // Category sales
-      const invIds = (invoices || []).map(i => i.id)
-      if (invIds.length > 0) {
-        const { data: items } = await supabase
-          .from('invoice_items')
-          .select('price, tax_amount, invoice_id, item_master!inner(name, hsn_code, category)')
-          .in('invoice_id', invIds)
-        const byCat = {}
-        for (const it of (items || [])) {
-          const cat = it.item_master?.category || 'Other'
-          if (!byCat[cat]) byCat[cat] = { category: cat, value: 0, tax: 0, count: 0 }
-          byCat[cat].value += parseFloat(it.price) || 0
-          byCat[cat].tax += parseFloat(it.tax_amount) || 0
-          byCat[cat].count++
+        // Monthly outward supply summary
+        const byMonth = {}
+        for (const inv of (invoices || [])) {
+          const m = inv.date ? inv.date.slice(0, 7) : 'unknown'
+          if (!byMonth[m]) byMonth[m] = { count: 0, total: 0, intra: 0, inter: 0 }
+          byMonth[m].count++
+          byMonth[m].total += parseFloat(inv.grand_total) || 0
+          if ((inv.customer_state || '').toLowerCase() === shopState) {
+            byMonth[m].intra++
+          } else {
+            byMonth[m].inter++
+          }
         }
-        setCatData(Object.values(byCat).sort((a, b) => b.value - a.value))
-      }
-      setLoading(false)
+        setSupplyData(byMonth)
+
+        // Category sales
+        const invIds = (invoices || []).map(i => i.id)
+        if (invIds.length > 0) {
+          const { data: items } = await supabase
+            .from('invoice_items')
+            .select('price, tax_amount, invoice_id, item_master!inner(name, hsn_code, category)')
+            .in('invoice_id', invIds)
+          const byCat = {}
+          for (const it of (items || [])) {
+            const cat = it.item_master?.category || 'Other'
+            if (!byCat[cat]) byCat[cat] = { category: cat, value: 0, tax: 0, count: 0 }
+            byCat[cat].value += parseFloat(it.price) || 0
+            byCat[cat].tax += parseFloat(it.tax_amount) || 0
+            byCat[cat].count++
+          }
+          setCatData(Object.values(byCat).sort((a, b) => b.value - a.value))
+        }
+      } catch (err) { addToast('Failed to load report data', 'error') }
+      finally { setLoading(false) }
     })()
   }, [year])
 

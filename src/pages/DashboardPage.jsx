@@ -23,7 +23,7 @@ export default function DashboardPage() {
       const [itemsRes, customersRes, invoicesRes] = await Promise.all([
         supabase.from('item_master').select('id', { count: 'exact', head: true }).eq('active', true),
         supabase.from('customers').select('id', { count: 'exact', head: true }),
-        supabase.from('invoices').select('grand_total', { count: 'exact', head: true }),
+          supabase.from('invoices').select('id', { count: 'exact', head: true }),
       ])
       setStats({
         items: itemsRes.count || 0,

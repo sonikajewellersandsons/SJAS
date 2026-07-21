@@ -6,6 +6,7 @@ import ComboBox from '../components/ComboBox'
 import { Search, Plus, X, FileText } from 'lucide-react'
 
 const DEFAULT_TAX_PCT = 3
+const DEFAULT_LABOUR_PCT = 10
 const HALLMARK_TAX_PCT = 18
 
 function fmt(n) {
@@ -39,8 +40,9 @@ export default function BillingPage() {
 
   // Items bucket
   const [lineItems, setLineItems] = useState([
-    { item_id: '', description: '', weight: '', labour: '', tax_pct: DEFAULT_TAX_PCT, hallmark_charge: 0, huid_enabled: true, huid_code: '' }
+    { item_id: '', description: '', weight: '', labour_pct: DEFAULT_LABOUR_PCT.toString(), tax_pct: DEFAULT_TAX_PCT.toString(), hallmark_charge: 0, huid_enabled: true, huid_code: '' }
   ])
+  const [expandedLot, setExpandedLot] = useState(-1)
 
   // Inward Supply vouchers (exchange adjustment)
   const [inwardVouchers, setInwardVouchers] = useState([])
@@ -53,12 +55,13 @@ export default function BillingPage() {
   const [paymentMode, setPaymentMode] = useState('CASH')
   const [cashAmt, setCashAmt] = useState(0)
   const [bankAmt, setBankAmt] = useState(0)
-  const [taxPct, setTaxPct] = useState(DEFAULT_TAX_PCT)
+  const [taxPct, setTaxPct] = useState(DEFAULT_TAX_PCT.toString())
 
   // Edit mode
   const [editMode, setEditMode] = useState(false)
   const [editInvoiceId, setEditInvoiceId] = useState(null)
   const editModeRef = useRef(false)
+  const editOriginalItems = useRef([])
 
   useEffect(() => { editModeRef.current = editMode }, [editMode])
 
@@ -89,8 +92,6 @@ export default function BillingPage() {
       if (itemsRes.data) setMasterItems(itemsRes.data)
       if (stockRes.data) setStockLots(stockRes.data)
       if (inwardRes.data) setInwardVouchers(inwardRes.data)
-      const settingsGoldRate = settingsRes.data ? parseFloat(settingsRes.data.find(s => s.key === 'gold_rate')?.value || 0) : 0
-      if (settingsGoldRate) { setGoldRate(settingsGoldRate); setGoldRateStr(settingsGoldRate.toLocaleString('en-IN')) }
       if (pendingEditId) {
         setEditInvoiceId(pendingEditId)
         setEditMode(true)
@@ -124,6 +125,7 @@ export default function BillingPage() {
     if (cust) { setSelectedCustomer(cust) }
 
     const items = (inv.invoice_items || []).sort((a, b) => a.sno - b.sno)
+    editOriginalItems.current = items
     setLineItems(items.map(item => {
       const mi = (miList || []).find(m => m.id === item.item_id)
       // Use stored labour_rate if available, else fallback to reverse calc
@@ -133,15 +135,14 @@ export default function BillingPage() {
         item_id: item.item_id.toString(),
         description: mi?.name || item.item_master?.name || '',
         weight: item.weight.toString(),
-        labour: computedLabour.toFixed(2),
-        tax_pct: item.tax_pct !== null && item.tax_pct !== undefined ? parseFloat(item.tax_pct) : DEFAULT_TAX_PCT,
+        labour_pct: item.labour_pct != null ? item.labour_pct.toString() : (storedLabour > 0 ? Math.round(computedLabour / (invGoldRate / 10) * 100) : DEFAULT_LABOUR_PCT).toString(),
+        tax_pct: item.tax_pct != null && item.tax_pct !== undefined ? item.tax_pct.toString() : DEFAULT_TAX_PCT.toString(),
         hallmark_charge: parseFloat(item.hallmark_charge) || 0,
         huid_enabled: item.huid,
         huid_code: item.huid_code || '',
       }
     }))
 
-    setLoading(false)
   }
 
   async function getFy() {
@@ -222,21 +223,37 @@ export default function BillingPage() {
     if (!w) return null
     const item = masterItems.find(m => m.id === parseInt(itemId))
     if (!item) return null
+    // Skip stock check for original items in edit mode
+    if (editMode && excludeIndex >= 0 && excludeIndex < editOriginalItems.current.length) {
+      const orig = editOriginalItems.current[excludeIndex]
+      if (orig && orig.item_id === parseInt(itemId) && parseFloat(orig.weight) === w && orig.huid === !!huidEnabled) {
+        return { available: true }
+      }
+    }
     const match = stockLots.find(l =>
-      l.item_name === item.name && Number(l.weight) === w && l.huid === !!huidEnabled && l.pcs > 0
+      l.item_name === item.name && Number(l.weight) === w && l.huid === !!huidEnabled && l.avail_pcs > 0
     )
     if (!match) return { available: false }
-    const alreadyClaimed = lineItems.filter((ln, i) =>
-      i !== excludeIndex && ln.item_id && parseFloat(ln.weight) === w &&
-      masterItems.find(m => m.id === parseInt(ln.item_id))?.name === item.name
-    ).length
-    return (match.pcs - alreadyClaimed) > 0
+    const alreadyClaimed = lineItems.filter((ln, i) => {
+      if (i >= excludeIndex) return false
+      // Skip original items in edit mode — they already consumed stock on first save
+      if (editMode && i < editOriginalItems.current.length) {
+        const orig = editOriginalItems.current[i]
+        if (orig && orig.item_id === parseInt(ln.item_id) && parseFloat(orig.weight) === parseFloat(ln.weight) && orig.huid === (ln.huid_enabled === true)) {
+          return false
+        }
+      }
+      return ln.item_id && parseFloat(ln.weight) === w &&
+        masterItems.find(m => m.id === parseInt(ln.item_id))?.name === item.name &&
+        (ln.huid_enabled === true) === !!huidEnabled
+    }).length
+    return (match.avail_pcs - alreadyClaimed) > 0
       ? { available: true, lot: match }
       : { available: false }
   }
 
   function addLine() {
-    setLineItems([...lineItems, { item_id: '', description: '', weight: '', labour: '', tax_pct: taxPct, hallmark_charge: 0, huid_enabled: true, huid_code: '' }])
+    setLineItems([...lineItems, { item_id: '', description: '', weight: '', labour_pct: DEFAULT_LABOUR_PCT.toString(), tax_pct: taxPct, hallmark_charge: 0, huid_enabled: true, huid_code: '' }])
   }
 
   function updateLine(index, field, value) {
@@ -250,6 +267,9 @@ export default function BillingPage() {
           newLine.hallmark_charge = Number(item.hallmark_charge)
         }
       }
+      if (field === 'huid_enabled' && value === false) {
+        newLine.huid_code = ''
+      }
       return newLine
     })
     setLineItems(updated)
@@ -260,10 +280,21 @@ export default function BillingPage() {
     setLineItems(lineItems.filter((_, i) => i !== index))
   }
 
+  function getFilteredLots(line) {
+    if (!line.item_id) return []
+    const item = masterItems.find(m => m.id === parseInt(line.item_id))
+    if (!item) return []
+    let lots = stockLots.filter(l => l.item_name === item.name && l.avail_pcs > 0)
+    const w = parseFloat(line.weight)
+    if (w) lots = lots.filter(l => Number(l.weight) === w)
+    return lots
+  }
+
   // Calculations — discount applied BEFORE tax per GST
   function calcLinePrice(line) {
     const w = parseFloat(line.weight) || 0
-    const lab = parseFloat(line.labour) || 0
+    const labourPct = parseFloat(line.labour_pct) || DEFAULT_LABOUR_PCT
+    const lab = goldPerGram * labourPct / 100
     const ratePerGram = goldPerGram + lab
     const price = w * ratePerGram
     const hc = parseFloat(line.hallmark_charge) || 0
@@ -308,7 +339,7 @@ export default function BillingPage() {
     for (const l of validLines) {
       const origIdx = lineItems.indexOf(l)
       if (!parseFloat(l.weight)) { addToast(`Item #${origIdx+1}: enter a valid weight`, 'error'); savingRef.current = false; return }
-      if (l.labour === '' || isNaN(parseFloat(l.labour))) { addToast(`Item #${origIdx+1}: enter labour charge`, 'error'); savingRef.current = false; return }
+      if (l.labour_pct === '' || isNaN(parseFloat(l.labour_pct))) { addToast(`Item #${origIdx+1}: enter labour %`, 'error'); savingRef.current = false; return }
     }
     if (paymentMode === 'BOTH' && Math.abs(parseFloat(cashAmt || 0) + parseFloat(bankAmt || 0) - grandTotal) > 0.01) {
       addToast('Cash + Bank amount must equal Grand Total', 'error'); savingRef.current = false; return
@@ -405,7 +436,8 @@ export default function BillingPage() {
           price: Math.round(c.price * 100) / 100,
           tax_amount: Math.round(c.tax * 100) / 100,
           tax_pct: parseFloat(line.tax_pct) || DEFAULT_TAX_PCT,
-          labour_rate: parseFloat(line.labour) || 0,
+          labour_rate: Math.round(goldPerGram * (parseFloat(line.labour_pct) || DEFAULT_LABOUR_PCT) / 100 * 100) / 100,
+          labour_pct: parseFloat(line.labour_pct) || DEFAULT_LABOUR_PCT,
           hallmark_charge: c.hc,
           huid: line.huid_enabled,
           huid_code: line.huid_code || '',
@@ -450,7 +482,7 @@ export default function BillingPage() {
       addToast(err.message || 'Failed to save invoice', 'error')
       console.error('Invoice error:', err)
       // #1/#16: restore stock and reload form on edit failure
-      if (reversed && editMode && editInvoiceId) {
+      if (reversed && editModeRef.current && editInvoiceId) {
         await supabase.rpc('process_invoice_stock', { p_invoice_id: editInvoiceId }).catch(() => {})
         const { data: restored } = await supabase.from('invoices').select('*, invoice_items(*)').eq('id', editInvoiceId).single()
         if (restored) {
@@ -465,15 +497,15 @@ export default function BillingPage() {
           setBankAmt(parseFloat(restored.bank_amt) || 0)
           if (restored.gold_rate) { setGoldRate(parseFloat(restored.gold_rate)); setGoldRateStr(parseFloat(restored.gold_rate).toLocaleString('en-IN')) }
           const restoredGoldRate = parseFloat(restored.gold_rate) || 0
-          setLineItems(restored.invoice_items.map(item => {
+          setLineItems((restored.invoice_items || []).map(item => {
             const mi = masterItems.find(m => m.id === item.item_id)
-            const storedLabour = parseFloat(item.labour_rate)
-            const labour = storedLabour > 0 ? storedLabour : (restoredGoldRate > 0 ? Math.max(0, parseFloat(item.rate_per_gram) - restoredGoldRate / 10) : 0)
+            const storedLabourPct = parseFloat(item.labour_pct)
+            const labourPct = storedLabourPct > 0 ? storedLabourPct : (restoredGoldRate > 0 ? Math.round((parseFloat(item.rate_per_gram) - restoredGoldRate / 10) / (restoredGoldRate / 10) * 100) : DEFAULT_LABOUR_PCT)
             return {
               item_id: item.item_id.toString(),
               description: mi?.name || '',
               weight: item.weight.toString(),
-              labour: labour.toFixed(2),
+              labour_pct: labourPct,
               tax_pct: item.tax_pct !== null && item.tax_pct !== undefined ? parseFloat(item.tax_pct) : DEFAULT_TAX_PCT,
               hallmark_charge: parseFloat(item.hallmark_charge) || 0,
               huid_enabled: item.huid,
@@ -494,7 +526,7 @@ export default function BillingPage() {
     setIsNewCustomer(false)
     setNewCust({ name: '', phone: '', address: '', state: 'Haryana', aadhaar: '', pan: '', pincode: '', gstin: '' })
     setCustSearch('')
-    setLineItems([{ item_id: '', description: '', weight: '', labour: '', tax_pct: taxPct, hallmark_charge: 0, huid_enabled: true, huid_code: '' }])
+    setLineItems([{ item_id: '', description: '', weight: '', labour_pct: DEFAULT_LABOUR_PCT.toString(), tax_pct: taxPct, hallmark_charge: 0, huid_enabled: true, huid_code: '' }])
     setAdjAmt(0)
     setAdjBillNo('')
     setAdjVoucherId(null)
@@ -504,6 +536,7 @@ export default function BillingPage() {
     setBankAmt(0)
     setEditMode(false)
     setEditInvoiceId(null)
+    editOriginalItems.current = []
     setGoldRate(0)
     setGoldRateStr('')
     generateInvNo()
@@ -535,7 +568,7 @@ export default function BillingPage() {
               <label className="label">Gold Rate /10g</label>
               <div className="input-group">
                 <span className="input-addon">₹</span>
-                <input className="input input-group-field" type="text" inputMode="decimal" value={goldRateStr} onChange={e => { const v = e.target.value.replace(/[^0-9.]/g, ''); setGoldRateStr(v); setGoldRate(parseFloat(v) || 0) }} onBlur={e => { const n = parseFloat(e.target.value.replace(/[^0-9.]/g, '')) || 0; setGoldRateStr(n.toLocaleString('en-IN')) }} onFocus={e => { setGoldRateStr(goldRate ? goldRate.toString() : '') }} />
+                <input className="input input-group-field" type="text" inputMode="decimal" value={goldRateStr} onChange={e => { const v = e.target.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1'); setGoldRateStr(v); setGoldRate(parseFloat(v) || 0) }} onBlur={e => { const n = parseFloat(e.target.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1')) || 0; setGoldRateStr(n.toLocaleString('en-IN')) }} onFocus={e => { setGoldRateStr(goldRate ? goldRate.toString() : '') }} />
               </div>
             </div>
           </div>
@@ -623,100 +656,147 @@ export default function BillingPage() {
           <div className="card-header">
             <h3 className="card-title">Items</h3>
           </div>
-          <div style={{ padding: '0.75rem 1rem' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div style={{ padding: '0.6rem 1rem' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {lineItems.map((line, i) => {
                 const c = lineTotals[i]
                 return (
-                  <div key={i} style={{ background: 'var(--bg)', borderRadius: 'var(--radius-lg)', padding: '0.75rem', border: '1px solid var(--border)' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <div key={i} style={{ background: 'var(--bg)', borderRadius: 'var(--radius-lg)', padding: '0.5rem 0.6rem', border: '1px solid var(--border)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
                       <span className="text-xs font-bold text-muted">Item #{i + 1}</span>
                       {lineItems.length > 1 && (
-                        <button type="button" onClick={() => removeLine(i)} style={{ background: 'none', border: 'none', color: 'var(--red)', cursor: 'pointer' }}><X size={16} /></button>
+                        <button type="button" onClick={() => removeLine(i)} style={{ background: 'none', border: 'none', color: 'var(--red)', cursor: 'pointer', lineHeight: 0 }}><X size={14} /></button>
                       )}
                     </div>
-                    <div className="form-row">
-                      <div className="form-group" style={{ flex: '2.5' }}>
-                        <label className="label" style={{ fontSize: '0.7rem', fontWeight: 600 }}>Description</label>
-                        <ComboBox
-                          options={masterItems.map(m => ({ value: m.id.toString(), label: `${m.name} (${m.purity})` }))}
-                          value={line.item_id?.toString()}
-                          onChange={val => updateLine(i, 'item_id', val)}
-                          placeholder="Type to search item..."
-                        />
-                        {line.item_id && line.weight && (() => {
-                          const stock = checkStock(line.item_id, line.weight, line.huid_enabled, i)
-                          if (!stock) return null
-                          return (
-                            <div style={{ marginTop: '4px' }}>
-                              {stock.available ? (
-                                <span className="badge badge-green" style={{ fontSize: '10px' }}>In Stock ✓</span>
-                              ) : (
-                                <span className="badge badge-red" style={{ fontSize: '10px' }}>Not in Stock ✗</span>
+
+                    <div className="form-row" style={{ gap: '6px', alignItems: 'stretch' }}>
+                      <div style={{ flex: '1.6', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.4rem 0.5rem' }}>
+                        <div style={{ fontSize: '0.55rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: '4px' }}>Item Details</div>
+                        <div>
+                          <ComboBox
+                            options={masterItems.map(m => ({ value: m.id.toString(), label: `${m.name} (${m.purity})` }))}
+                            value={line.item_id?.toString()}
+                            onChange={val => updateLine(i, 'item_id', val)}
+                            placeholder="Type to search item..."
+                          />
+                          {line.item_id && line.weight && (() => {
+                            const stock = checkStock(line.item_id, line.weight, line.huid_enabled, i)
+                            const lots = getFilteredLots(line)
+                            return (
+                              <div style={{ marginTop: '2px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                                  {stock ? (
+                                    stock.available ? (
+                                      <span className="badge badge-green" style={{ fontSize: '9px' }}>✓ In Stock</span>
+                                    ) : (
+                                      <span className="badge badge-red" style={{ fontSize: '9px' }}>✗ Out of Stock</span>
+                                    )
+                                  ) : null}
+                                  {lots.length > 0 && (
+                                    <button type="button" onClick={() => setExpandedLot(expandedLot === i ? -1 : i)} style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: '9px', textDecoration: 'underline', padding: 0 }}>
+                                      {expandedLot === i ? 'Hide' : 'Show'} {lots.length} lot{lots.length > 1 ? 's' : ''}
+                                    </button>
+                                  )}
+                                </div>
+                                {expandedLot === i && (
+                                  <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: '4px', fontSize: '9px' }}>
+                                    <thead>
+                                      <tr>
+                                        <th style={{ border: '1px solid var(--border)', padding: '2px 4px', textAlign: 'left', fontWeight: 600, color: 'var(--text-muted)' }}>Wt</th>
+                                        <th style={{ border: '1px solid var(--border)', padding: '2px 4px', textAlign: 'left', fontWeight: 600, color: 'var(--text-muted)' }}>HUID</th>
+                                        <th style={{ border: '1px solid var(--border)', padding: '2px 4px', textAlign: 'center', fontWeight: 600, color: 'var(--text-muted)' }}>Pcs</th>
+                                        <th style={{ border: '1px solid var(--border)', padding: '2px 4px', textAlign: 'left', fontWeight: 600, color: 'var(--text-muted)' }}>Date</th>
+                                        <th style={{ border: '1px solid var(--border)', padding: '2px 4px', textAlign: 'left', fontWeight: 600, color: 'var(--text-muted)' }}>Status</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {lots.map(lot => (
+                                        <tr key={lot.lot_id}>
+                                          <td style={{ border: '1px solid var(--border)', padding: '2px 4px' }}>{Number(lot.weight).toFixed(3)}</td>
+                                          <td style={{ border: '1px solid var(--border)', padding: '2px 4px' }}>{lot.huid ? 'Y' : 'N'}</td>
+                                          <td style={{ border: '1px solid var(--border)', padding: '2px 4px', textAlign: 'center' }}>{lot.avail_pcs}</td>
+                                          <td style={{ border: '1px solid var(--border)', padding: '2px 4px' }}>{lot.ref_date?.slice(0, 10)}</td>
+                                          <td style={{ border: '1px solid var(--border)', padding: '2px 4px' }}>{lot.status}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                )}
+                              </div>
+                            )
+                          })()}
+                        </div>
+                        <div className="form-row" style={{ gap: '6px', marginTop: '6px' }}>
+                          <div className="form-group" style={{ flex: '1' }}>
+                            <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Weight (g)</label>
+                            <input className="input" type="number" step="0.001" min="0" value={line.weight}
+                              onChange={e => updateLine(i, 'weight', e.target.value)} placeholder="0.000" style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
+                          </div>
+                          <div className="form-group" style={{ flex: '0.8' }}>
+                            <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Labour %</label>
+                            <input className="input" type="number" step="0.1" min="0" value={line.labour_pct}
+                              onChange={e => updateLine(i, 'labour_pct', e.target.value)} placeholder="10" style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
+                          </div>
+                          <div className="form-group" style={{ flex: '1.2' }}>
+                            <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Rate/g</label>
+                            <div className="font-mono" style={{ fontSize: '0.8rem', padding: '0.3rem 0', display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
+                              {c.ratePerGram > 0 ? (
+                                <><span style={{ fontWeight: 700 }}>{fmt(c.ratePerGram)}</span><span className="text-muted" style={{ fontSize: '0.7rem' }}>(G {fmt(goldPerGram)} + L {(c.ratePerGram - goldPerGram).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} @ {line.labour_pct || DEFAULT_LABOUR_PCT}%)</span></>
+                              ) : <span className="text-muted" style={{ fontSize: '0.7rem' }}>—</span>}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ flex: '1', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.4rem 0.5rem' }}>
+                        <div style={{ fontSize: '0.55rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: '4px' }}>Identification</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
+                          <div>
+                            <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>HUID</label>
+                            <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                              <label style={{ display: 'flex', alignItems: 'center', gap: '2px', cursor: 'pointer', fontSize: '0.75rem' }}>
+                                <input type="radio" name={`huid_${i}`} checked={line.huid_enabled === true}
+                                  onChange={() => updateLine(i, 'huid_enabled', true)} style={{ margin: 0 }} /> Y
+                              </label>
+                              <label style={{ display: 'flex', alignItems: 'center', gap: '2px', cursor: 'pointer', fontSize: '0.75rem' }}>
+                                <input type="radio" name={`huid_${i}`} checked={line.huid_enabled === false}
+                                  onChange={() => updateLine(i, 'huid_enabled', false)} style={{ margin: 0 }} /> N
+                              </label>
+                              {line.huid_enabled && (
+                                <input className="input" type="text" value={line.huid_code}
+                                  onChange={e => updateLine(i, 'huid_code', e.target.value)} placeholder="Code" style={{ flex: '1', minWidth: '50px', padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
                               )}
                             </div>
-                          )
-                        })()}
-                      </div>
-                      <div className="form-group">
-                        <label className="label" style={{ fontSize: '0.7rem', fontWeight: 600 }}>Weight (g)</label>
-                        <input className="input" type="number" step="0.001" min="0" value={line.weight}
-                          onChange={e => updateLine(i, 'weight', e.target.value)} placeholder="0.000" />
-                      </div>
-                      <div className="form-group">
-                        <label className="label" style={{ fontSize: '0.7rem', fontWeight: 600 }}>Labour/g (₹)</label>
-                        <input className="input" type="number" step="0.01" min="0" value={line.labour}
-                          onChange={e => updateLine(i, 'labour', e.target.value)} placeholder="0.00" />
-                      </div>
-                      <div className="form-group" style={{ flex: '1.2' }}>
-                        <label className="label" style={{ fontSize: '0.7rem', fontWeight: 600 }}>HUID</label>
-                        <div style={{ display: 'flex', gap: '12px', alignItems: 'center', height: '44px' }}>
-                          <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.8rem' }}>
-                            <input type="radio" name={`huid_${i}`} checked={line.huid_enabled === true}
-                              onChange={() => updateLine(i, 'huid_enabled', true)} /> Yes
-                          </label>
-                          <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.8rem' }}>
-                            <input type="radio" name={`huid_${i}`} checked={line.huid_enabled === false}
-                              onChange={() => updateLine(i, 'huid_enabled', false)} /> No
-                          </label>
+                          </div>
+                          <div>
+                            <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Tax %</label>
+                            <input className="input" type="number" step="0.01" min="0" value={line.tax_pct}
+                               onChange={e => updateLine(i, 'tax_pct', e.target.value)} style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
+                          </div>
                         </div>
                       </div>
-                      {line.huid_enabled && (
-                        <div className="form-group" style={{ flex: '1.2' }}>
-                          <label className="label" style={{ fontSize: '0.7rem', fontWeight: 600 }}>HUID Code</label>
-                          <input className="input" type="text" value={line.huid_code}
-                            onChange={e => updateLine(i, 'huid_code', e.target.value)} placeholder="e.g. Y1090" />
-                        </div>
-                      )}
-                      <div className="form-group" style={{ flex: '0.8' }}>
-                        <label className="label" style={{ fontSize: '0.7rem', fontWeight: 600 }}>Tax %</label>
-                        <input className="input" type="number" step="0.01" min="0" value={line.tax_pct}
-                          onChange={e => updateLine(i, 'tax_pct', parseFloat(e.target.value) || 0)} />
-                      </div>
                     </div>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '6px' }}>
-                      Rate/g: {fmt(c.ratePerGram)} (Gold {fmt(goldPerGram)} + Labour {fmt(parseFloat(line.labour) || 0)})
-                    </div>
-                    <div className="form-row" style={{ marginTop: '6px' }}>
-                      <div className="form-group">
-                        <label className="label" style={{ fontSize: '0.7rem', fontWeight: 600 }}>Price</label>
-                        <div className="font-mono" style={{ fontWeight: 700, height: '44px', display: 'flex', alignItems: 'center' }}>{fmt(c.price)}{discAmt > 0 ? <span className="text-xs text-muted" style={{ marginLeft: '4px' }}>({fmt(c.discountedPrice)})</span> : ''}</div>
-                      </div>
-                      <div className="form-group">
-                        <label className="label" style={{ fontSize: '0.7rem', fontWeight: 600 }}>Tax Amt</label>
-                        <div className="font-mono" style={{ height: '44px', display: 'flex', alignItems: 'center' }}>{fmt(c.tax)}</div>
-                      </div>
-                      <div className="form-group">
-                        <label className="label" style={{ fontSize: '0.7rem', fontWeight: 600 }}>Hallmark</label>
-                        <div className="font-mono" style={{ height: '44px', display: 'flex', alignItems: 'center' }}>{fmt(c.hc)}</div>
-                      </div>
-                      <div className="form-group">
-                        <label className="label" style={{ fontSize: '0.7rem', fontWeight: 600 }}>H. Tax (18%)</label>
-                        <div className="font-mono" style={{ height: '44px', display: 'flex', alignItems: 'center' }}>{fmt(c.hcTax)}</div>
-                      </div>
-                      <div className="form-group" style={{ flex: '1.5' }}>
-                        <label className="label" style={{ fontSize: '0.7rem', fontWeight: 600 }}>Line Total</label>
-                        <div className="font-mono" style={{ fontWeight: 700, color: 'var(--accent)', height: '44px', display: 'flex', alignItems: 'center', fontSize: '0.95rem' }}>{fmt(c.total)}</div>
+
+                    <div style={{ borderTop: '1px solid var(--border)', paddingTop: '6px' }}>
+                      <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: '4px' }}>Line Totals</div>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                        <tbody>
+                          <tr>
+                            <td style={{ border: '1px solid var(--border)', padding: '3px 8px', fontWeight: 600, fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: 'var(--text-secondary)' }}>Price</td>
+                            <td className="font-mono" style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'right', fontWeight: 700, fontSize: '0.85rem' }}>{fmt(c.price)}{discAmt > 0 ? <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginLeft: '2px' }}>({fmt(c.discountedPrice)})</span> : ''}</td>
+                            <td style={{ border: '1px solid var(--border)', padding: '3px 8px', fontWeight: 600, fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: 'var(--text-secondary)' }}>Tax</td>
+                            <td className="font-mono" style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'right', fontSize: '0.85rem' }}>{fmt(c.tax)}</td>
+                          </tr>
+                          <tr>
+                            <td style={{ border: '1px solid var(--border)', padding: '3px 8px', fontWeight: 600, fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: 'var(--text-secondary)' }}>Hallmark</td>
+                            <td className="font-mono" style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'right', fontSize: '0.85rem' }}>{fmt(c.hc)}</td>
+                            <td style={{ border: '1px solid var(--border)', padding: '3px 8px', fontWeight: 600, fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: 'var(--text-secondary)' }}>H.Tax</td>
+                            <td className="font-mono" style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'right', fontSize: '0.85rem' }}>{fmt(c.hcTax)}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', marginTop: '4px', fontSize: '0.9rem' }}>
+                        <span style={{ fontWeight: 700, fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.03em', marginRight: '8px' }}>Total</span>
+                        <span className="font-mono" style={{ fontWeight: 700, color: 'var(--accent)', fontSize: '1rem' }}>{fmt(c.total)}</span>
                       </div>
                     </div>
                   </div>

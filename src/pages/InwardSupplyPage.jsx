@@ -59,17 +59,19 @@ export default function InwardSupplyPage() {
 
   async function loadData() {
     setLoading(true)
-    const [vouchRes, custRes, metalRes] = await Promise.all([
-      supabase.from('inward_supply_vouchers').select('*').order('created_at', { ascending: false }).limit(500),
-      supabase.from('customers').select('id, name, phone, aadhaar').order('name'),
-      supabase.from('item_master').select('id, name, purity').eq('active', true).eq('category', 'Metal'),
-    ])
-    if (vouchRes.error) addToast('Failed to load vouchers', 'error')
-    if (custRes.error) addToast('Failed to load customers', 'error')
-    setVouchers(vouchRes.data || [])
-    setCustomers(custRes.data || [])
-    setMetalItems(metalRes.data || [])
-    setLoading(false)
+    try {
+      const [vouchRes, custRes, metalRes] = await Promise.all([
+        supabase.from('inward_supply_vouchers').select('*').order('created_at', { ascending: false }).limit(500),
+        supabase.from('customers').select('id, name, phone, aadhaar').order('name'),
+        supabase.from('item_master').select('id, name, purity').eq('active', true).eq('category', 'Metal'),
+      ])
+      if (vouchRes.error) addToast('Failed to load vouchers', 'error')
+      if (custRes.error) addToast('Failed to load customers', 'error')
+      setVouchers(vouchRes.data || [])
+      setCustomers(custRes.data || [])
+      setMetalItems(metalRes.data || [])
+    } catch (err) { addToast('Failed to load data', 'error') }
+    finally { setLoading(false) }
   }
 
   // Inv no generation
@@ -121,7 +123,6 @@ export default function InwardSupplyPage() {
     if (error) { addToast('Failed to save Aadhaar', 'error'); setAadhaarSaving(false); return }
     setSelectedCustomer({ ...selectedCustomer, aadhaar })
     setCustomers(customers.map(c => c.id === selectedCustomer.id ? { ...c, aadhaar } : c))
-    setShowAadhaarPrompt(false)
     setAadhaarSaving(false)
     addToast('Aadhaar saved', 'success')
   }
