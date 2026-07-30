@@ -536,8 +536,8 @@ export default function BillingPage() {
             weight: parseFloat(line.weight) || 0,
             rate_per_gram: Math.round((parseFloat(line.silver_rate) || 0) * 100) / 100,
             price: Math.round(c.price * 100) / 100,
-            tax_amount: 0,
-            tax_pct: 0,
+            tax_amount: Math.round(c.tax * 100) / 100,
+            tax_pct: parseFloat(line.tax_pct) || 0,
             labour_rate: 0,
             labour_pct: 0,
             hallmark_charge: 0,
@@ -555,8 +555,8 @@ export default function BillingPage() {
             weight: parseFloat(line.weight) || 0,
             rate_per_gram: Math.round(c.ratePerGram * 100) / 100,
             price: Math.round(c.price * 100) / 100,
-            tax_amount: 0,
-            tax_pct: 0,
+            tax_amount: Math.round(c.tax * 100) / 100,
+            tax_pct: parseFloat(line.tax_pct) || 0,
             labour_rate: Math.round(goldPerGram * 18 / 22 * ((!isNaN(parseFloat(line.labour_pct)) ? parseFloat(line.labour_pct) : DEFAULT_LABOUR_PCT) / 100) * 100) / 100,
             labour_pct: !isNaN(parseFloat(line.labour_pct)) ? parseFloat(line.labour_pct) : DEFAULT_LABOUR_PCT,
             hallmark_charge: 0,
@@ -906,12 +906,15 @@ export default function BillingPage() {
                       )}
                     </div>
 
-                    <div className="form-row" style={{ gap: '6px', alignItems: 'stretch' }}>
+                    <div className="form-row" style={{ gap: '6px', alignItems: 'stretch', display: 'flex', gridTemplateColumns: 'unset' }}>
                       {(() => {
                         if (line.is_silver) {
-                          return (
-                            <div style={{ flex: '1', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.4rem 0.5rem' }}>
-                              <div style={{ fontSize: '0.55rem', fontWeight: 700, color: 'var(--text-secondary)', letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: '4px' }}>Silver</div>
+                          const w = parseFloat(line.weight) || 0
+                          const rate = parseFloat(line.silver_rate) || 0
+                          const price = w * rate
+                          return [
+                            <div key="details" style={{ flex: '1', border: '1px solid #c8c8c8', borderRadius: 'var(--radius)', padding: '0.4rem 0.5rem', background: '#f4f4f6' }}>
+                              <div style={{ fontSize: '0.55rem', fontWeight: 700, color: '#888', letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: '4px' }}>Silver</div>
                               <div className="form-group" style={{ marginBottom: '6px' }}>
                                 <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Type</label>
                                 <select className="input" value={line.silver_type} onChange={e => updateLine(i, 'silver_type', e.target.value)} style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem' }}>
@@ -924,7 +927,7 @@ export default function BillingPage() {
                                 <input className="input" type="text" value={line.description}
                                   onChange={e => updateLine(i, 'description', e.target.value)} style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
                               </div>
-                              <div className="form-row" style={{ gap: '6px' }}>
+                              <div className="form-row" style={{ gap: '6px', display: 'flex', gridTemplateColumns: 'unset' }}>
                                 <div className="form-group" style={{ flex: '1' }}>
                                   <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Weight (g)</label>
                                   <input className="input" type="number" step="0.001" min="0" value={line.weight}
@@ -937,31 +940,78 @@ export default function BillingPage() {
                                 </div>
                               </div>
                               {line.weight && (() => {
-                                const w = parseFloat(line.weight) || 0
+                                const wt = parseFloat(line.weight) || 0
                                 const avail = silverStock[line.silver_type] || 0
                                 return <div style={{ marginTop: '2px' }}>
-                                  <span className={w <= avail ? 'badge badge-green' : 'badge badge-red'} style={{ fontSize: '9px' }}>{w <= avail ? '✓ ' + (avail - w).toFixed(3) + 'g avail' : '✗ Only ' + avail.toFixed(3) + 'g avail'}</span>
+                                  <span className={wt <= avail ? 'badge badge-green' : 'badge badge-red'} style={{ fontSize: '9px' }}>{wt <= avail ? '✓ ' + (avail - wt).toFixed(3) + 'g avail' : '✗ Only ' + avail.toFixed(3) + 'g avail'}</span>
                                 </div>
                               })()}
-                              {c.ratePerGram > 0 && (
-                                <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)', marginTop: '2px' }}>
-                                  {fmt(c.price)} @ {fmt(c.ratePerGram)}/g
-                                </div>
-                              )}
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '6px' }}>
+                                <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600, marginBottom: 0, whiteSpace: 'nowrap' }}>Tax %</label>
+                                <input className="input" type="number" step="0.01" min="0" value={line.tax_pct}
+                                  onChange={e => updateLine(i, 'tax_pct', e.target.value)} style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem', maxWidth: '80px' }} />
+                              </div>
+                            </div>,
+                            <div key="rate" style={{ flex: '2', border: '1px solid #c8c8c8', borderRadius: 'var(--radius)', padding: '0.4rem 0.5rem', background: '#f4f4f6' }}>
+                              <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Rate/g</label>
+                              <div className="font-mono">
+                                {rate > 0 ? (
+                                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+                                    <thead>
+                                      <tr>
+                                        <th style={{ width: '50%', border: '1px solid #d0d0d0', padding: '2px 6px', textAlign: 'center', fontWeight: 700, color: 'var(--text-muted)', background: '#eaeaea', fontSize: '0.65rem' }}>Rate</th>
+                                        <th style={{ width: '50%', border: '1px solid #d0d0d0', padding: '2px 6px', textAlign: 'center', fontWeight: 700, color: 'var(--text-muted)', background: '#eaeaea', fontSize: '0.65rem' }}>Total</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      <tr>
+                                        <td style={{ border: '1px solid #d0d0d0', padding: '3px 8px', textAlign: 'center', fontWeight: 600, color: 'var(--text-secondary)' }}>{fmt(rate)}/g</td>
+                                        <td style={{ border: '1px solid #d0d0d0', padding: '3px 8px', textAlign: 'center', fontWeight: 600, color: 'var(--text-secondary)' }}>{fmt(price)}</td>
+                                      </tr>
+                                    </tbody>
+                                  </table>
+                                ) : <span className="text-muted" style={{ fontSize: '0.7rem' }}>—</span>}
+                              </div>
+                              <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: '4px', marginTop: '8px' }}>Line Totals</div>
+                              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+                                <thead>
+                                  <tr>
+                                    <th style={{ width: '25%', border: '1px solid #d0d0d0', padding: '2px 6px', textAlign: 'center', fontWeight: 700, color: 'var(--text-muted)', background: '#eaeaea', fontSize: '0.65rem' }}></th>
+                                    <th style={{ width: '37.5%', border: '1px solid #d0d0d0', padding: '2px 6px', textAlign: 'center', fontWeight: 700, color: 'var(--text-muted)', background: '#eaeaea', fontSize: '0.65rem' }}>Price</th>
+                                    <th style={{ width: '37.5%', border: '1px solid #d0d0d0', padding: '2px 6px', textAlign: 'center', fontWeight: 700, color: 'var(--text-muted)', background: '#eaeaea', fontSize: '0.65rem' }}>Tax</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  <tr>
+                                    <td style={{ border: '1px solid #d0d0d0', padding: '3px 8px', textAlign: 'center', fontWeight: 700, color: '#888', fontSize: '0.7rem' }}>Silver</td>
+                                    <td style={{ border: '1px solid #d0d0d0', padding: '3px 8px', textAlign: 'center', fontWeight: 700 }}>{fmt(c.price)}{discAmt > 0 ? <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '2px' }}>({fmt(c.discountedPrice)})</span> : ''}</td>
+                                    <td style={{ border: '1px solid #d0d0d0', padding: '3px 8px', textAlign: 'center' }}>{fmt(c.tax)}</td>
+                                  </tr>
+                                </tbody>
+                              </table>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
+                                <span style={{ fontWeight: 700, fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: 'var(--text-secondary)' }}>Total</span>
+                                <span className="font-mono" style={{ fontWeight: 700, color: 'var(--accent)', fontSize: '0.9rem' }}>{fmt(c.total)}</span>
+                              </div>
                             </div>
-                          )
+                          ]
                         }
                         if (line.is_gold_18k) {
                           const gold18kBase = goldPerGram * 18 / 22
-                          return (
-                            <div style={{ flex: '1', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.4rem 0.5rem' }}>
-                              <div style={{ fontSize: '0.55rem', fontWeight: 700, color: 'var(--text-secondary)', letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: '4px' }}>Gold 18K</div>
+                          const w = parseFloat(line.weight) || 0
+                          const lp = parseFloat(line.labour_pct); const labourPct = !isNaN(lp) ? lp : DEFAULT_LABOUR_PCT
+                          const goldValue = w * gold18kBase
+                          const labour = goldValue * labourPct / 100
+                          const total = goldValue + labour
+                          return [
+                            <div key="details" style={{ flex: '1', border: '1px solid var(--gold)', borderRadius: 'var(--radius)', padding: '0.4rem 0.5rem', background: 'var(--gold-bg)' }}>
+                              <div style={{ fontSize: '0.55rem', fontWeight: 700, color: 'var(--gold)', letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: '4px' }}>Gold 18K</div>
                               <div className="form-group" style={{ marginBottom: '6px' }}>
                                 <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Description</label>
-                                <input className="input" type="text" value={line.description}
-                                  onChange={e => updateLine(i, 'description', e.target.value)} style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
+                                <input className="input" type="text" value={line.description} disabled
+                                  style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem', opacity: 0.7 }} />
                               </div>
-                              <div className="form-row" style={{ gap: '6px' }}>
+                              <div className="form-row" style={{ gap: '6px', display: 'flex', gridTemplateColumns: 'unset' }}>
                                 <div className="form-group" style={{ flex: '1' }}>
                                   <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Weight (g)</label>
                                   <input className="input" type="number" step="0.001" min="0" value={line.weight}
@@ -974,22 +1024,66 @@ export default function BillingPage() {
                                 </div>
                               </div>
                               {line.weight && (() => {
-                                const w = parseFloat(line.weight) || 0
+                                const wt = parseFloat(line.weight) || 0
                                 return <div style={{ marginTop: '2px' }}>
-                                  <span className={w <= goldStock ? 'badge badge-green' : 'badge badge-red'} style={{ fontSize: '9px' }}>{w <= goldStock ? '✓ ' + (goldStock - w).toFixed(3) + 'g avail' : '✗ Only ' + goldStock.toFixed(3) + 'g avail'}</span>
+                                  <span className={wt <= goldStock ? 'badge badge-green' : 'badge badge-red'} style={{ fontSize: '9px' }}>{wt <= goldStock ? '✓ ' + (goldStock - wt).toFixed(3) + 'g avail' : '✗ Only ' + goldStock.toFixed(3) + 'g avail'}</span>
                                 </div>
                               })()}
-                              {c.ratePerGram > 0 && (
-                                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                                  <span style={{ fontWeight: 700 }}>{fmt(c.price)} @ {fmt(c.ratePerGram)}/g</span>
-                                  <span className="text-muted" style={{ fontSize: '0.65rem' }}> ({fmt(gold18kBase)}/g + L {line.labour_pct || DEFAULT_LABOUR_PCT}%)</span>
-                                </div>
-                              )}
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '6px' }}>
+                                <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600, marginBottom: 0, whiteSpace: 'nowrap' }}>Tax %</label>
+                                <input className="input" type="number" step="0.01" min="0" value={line.tax_pct}
+                                  onChange={e => updateLine(i, 'tax_pct', e.target.value)} style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem', maxWidth: '80px' }} />
+                              </div>
+                            </div>,
+                            <div key="rate" style={{ flex: '2', border: '1px solid var(--gold)', borderRadius: 'var(--radius)', padding: '0.4rem 0.5rem', background: 'var(--gold-bg)' }}>
+                              <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Rate/g</label>
+                              <div className="font-mono">
+                                {goldPerGram > 0 ? (
+                                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+                                    <thead>
+                                      <tr>
+                                        <th style={{ width: '50%', border: '1px solid var(--border)', padding: '2px 6px', textAlign: 'center', fontWeight: 700, color: 'var(--text-muted)', background: 'var(--bg-secondary)', fontSize: '0.65rem' }}>Gold</th>
+                                        <th style={{ width: '50%', border: '1px solid var(--border)', padding: '2px 6px', textAlign: 'center', fontWeight: 700, color: 'var(--text-muted)', background: 'var(--bg-secondary)', fontSize: '0.65rem' }}>L {labourPct}%</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      <tr>
+                                        <td style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center', fontWeight: 600, color: 'var(--text-secondary)' }}>{fmt(goldValue)}</td>
+                                        <td style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center', fontWeight: 600, color: 'var(--text-secondary)' }}>{fmt(labour)}</td>
+                                      </tr>
+                                      <tr>
+                                        <td colSpan={2} style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center', fontWeight: 700, color: 'var(--accent)' }}>{fmt(total)}</td>
+                                      </tr>
+                                    </tbody>
+                                  </table>
+                                ) : <span className="text-muted" style={{ fontSize: '0.7rem' }}>—</span>}
+                              </div>
+                              <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: '4px', marginTop: '8px' }}>Line Totals</div>
+                              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+                                <thead>
+                                  <tr>
+                                    <th style={{ width: '25%', border: '1px solid var(--border)', padding: '2px 6px', textAlign: 'center', fontWeight: 700, color: 'var(--text-muted)', background: 'var(--bg-secondary)', fontSize: '0.65rem' }}></th>
+                                    <th style={{ width: '37.5%', border: '1px solid var(--border)', padding: '2px 6px', textAlign: 'center', fontWeight: 700, color: 'var(--text-muted)', background: 'var(--bg-secondary)', fontSize: '0.65rem' }}>Price</th>
+                                    <th style={{ width: '37.5%', border: '1px solid var(--border)', padding: '2px 6px', textAlign: 'center', fontWeight: 700, color: 'var(--text-muted)', background: 'var(--bg-secondary)', fontSize: '0.65rem' }}>Tax</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  <tr>
+                                    <td style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center', fontWeight: 700, color: 'var(--text-secondary)', fontSize: '0.7rem' }}>Gold 18K</td>
+                                    <td style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center', fontWeight: 700 }}>{fmt(c.price)}{discAmt > 0 ? <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '2px' }}>({fmt(c.discountedPrice)})</span> : ''}</td>
+                                    <td style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center' }}>{fmt(c.tax)}</td>
+                                  </tr>
+                                </tbody>
+                              </table>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
+                                <span style={{ fontWeight: 700, fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: 'var(--text-secondary)' }}>Total</span>
+                                <span className="font-mono" style={{ fontWeight: 700, color: 'var(--accent)', fontSize: '0.9rem' }}>{fmt(c.total)}</span>
+                              </div>
                             </div>
-                          )
+                          ]
                         }
                         return [
-                          <div key="details" style={{ flex: '1.6', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.4rem 0.5rem' }}>
+                          <div key="details" style={{ flex: '1', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.4rem 0.5rem' }}>
                             <div style={{ fontSize: '0.55rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: '4px' }}>Item Details</div>
                         <div>
                           <ComboBox
@@ -1080,7 +1174,7 @@ export default function BillingPage() {
                           </div>
                         </div>
                           </div>,
-                          <div key="rate" style={{ flex: '1', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.4rem 0.5rem' }}>
+                          <div key="rate" style={{ flex: '2', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.4rem 0.5rem' }}>
                             <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Rate/g</label>
                             <div className="font-mono">
                               {goldPerGram > 0 ? (
