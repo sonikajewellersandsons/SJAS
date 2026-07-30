@@ -238,6 +238,7 @@ tbody tr:last-child td { border-bottom: none; }
 .badge-red { background: var(--red-bg); color: var(--red); }
 .badge-blue { background: var(--blue-bg); color: var(--blue); }
 .badge-gold { background: var(--gold-bg); color: var(--gold); }
+.badge-silver { background: #e8e8e8; color: #666; }
 
 /* ─── FILTERS ── */
 .filter-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 1rem; flex-wrap: wrap; }

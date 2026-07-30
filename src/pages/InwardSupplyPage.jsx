@@ -55,6 +55,10 @@ export default function InwardSupplyPage() {
   const [viewVoucher, setViewVoucher] = useState(null)
   const [viewItems, setViewItems] = useState([])
 
+  // Delete confirmation
+  const [confirmDelete, setConfirmDelete] = useState(null)
+  const [deleting, setDeleting] = useState(false)
+
   useEffect(() => { loadData() }, [])
 
   async function loadData() {
@@ -274,14 +278,17 @@ export default function InwardSupplyPage() {
   }
 
   async function deleteVoucher(invNoToDel) {
-    if (!window.confirm(`Delete voucher "${invNoToDel}"? This cannot be undone.`)) return
+    setDeleting(true)
     const { error } = await supabase.rpc('delete_inward_supply', { p_inv_no: invNoToDel })
     if (error) {
       addToast(error.message, 'error')
+      setDeleting(false)
       return
     }
     addToast(`Voucher ${invNoToDel} deleted`, 'success')
+    setConfirmDelete(null)
     setShowModal(false)
+    setDeleting(false)
     loadData()
   }
 
@@ -369,7 +376,7 @@ export default function InwardSupplyPage() {
                     <button className="btn-icon btn-sm" onClick={() => viewDetails(v.inv_no)} title="View"><Eye size={15} /></button>
                     <button className="btn-icon btn-sm" onClick={() => loadEditVoucher(v.inv_no)} title="Edit"><Edit3 size={15} /></button>
                     {v.inv_no === lastVoucherInvNo && (
-                      <button className="btn-icon btn-sm" onClick={() => deleteVoucher(v.inv_no)} title="Delete" style={{ color: 'var(--red)' }}><Trash2 size={15} /></button>
+                      <button className="btn-icon btn-sm" onClick={() => setConfirmDelete(v.inv_no)} title="Delete" style={{ color: 'var(--red)' }}><Trash2 size={15} /></button>
                     )}
                   </div>
                 </td>
@@ -517,6 +524,27 @@ export default function InwardSupplyPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Delete Confirmation Modal ─── */}
+      {confirmDelete && (
+        <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) setConfirmDelete(null) }}>
+          <div className="modal-card" style={{ maxWidth: '440px' }}>
+            <div className="modal-header">
+              <h3 className="modal-title">Delete Voucher</h3>
+              <button className="modal-close" onClick={() => setConfirmDelete(null)}><X size={20} /></button>
+            </div>
+            <div style={{ padding: '0 1rem 1rem', fontSize: '0.9rem' }}>
+              <p style={{ marginBottom: '1rem' }}>Delete voucher <strong>{confirmDelete}</strong>? This cannot be undone.</p>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                <button className="btn btn-outline" onClick={() => setConfirmDelete(null)} disabled={deleting}>Cancel</button>
+                <button className="btn btn-danger" onClick={() => deleteVoucher(confirmDelete)} disabled={deleting}>
+                  {deleting ? 'Deleting...' : 'Delete'}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

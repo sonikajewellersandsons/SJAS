@@ -28,6 +28,7 @@ export default function BillingPage() {
   const [invNo, setInvNo] = useState('')
   const [goldRate, setGoldRate] = useState(0)
   const [goldRateStr, setGoldRateStr] = useState('')
+  const [useCustomGoldRate, setUseCustomGoldRate] = useState(false)
 
   // Customer
   const [custSearch, setCustSearch] = useState('')
@@ -40,9 +41,11 @@ export default function BillingPage() {
 
   // Items bucket
   const [lineItems, setLineItems] = useState([
-    { item_id: '', description: '', weight: '', labour_pct: DEFAULT_LABOUR_PCT.toString(), tax_pct: DEFAULT_TAX_PCT.toString(), hallmark_charge: 0, huid_enabled: true, huid_code: '' }
+    { item_id: '', description: '', weight: '', labour_pct: DEFAULT_LABOUR_PCT.toString(), tax_pct: DEFAULT_TAX_PCT.toString(), hallmark_charge: 0, huid_enabled: true, huid_code: '', is_silver: false, silver_rate: '', silver_type: 'silver_925' }
   ])
   const [expandedLot, setExpandedLot] = useState(-1)
+  const [silverStock, setSilverStock] = useState({ silver_925: 0, silver_ornaments: 0 })
+  const [goldStock, setGoldStock] = useState(0)
 
   // Inward Supply vouchers (exchange adjustment)
   const [inwardVouchers, setInwardVouchers] = useState([])
@@ -82,7 +85,7 @@ export default function BillingPage() {
     try {
       const [custRes, itemsRes, settingsRes, stockRes, inwardRes] = await Promise.all([
         supabase.from('customers').select('*').order('name'),
-        supabase.from('item_master').select('id, name, hallmark_charge, purity').eq('active', true).order('name'),
+        supabase.from('item_master').select('id, name, hallmark_charge, purity, material_type').eq('active', true).order('name'),
         supabase.from('settings').select('key, value'),
         supabase.rpc('get_stock_lots'),
         supabase.from('inward_supply_vouchers').select('id, inv_no, customer_id, customer_name, grand_total, date')
@@ -92,12 +95,34 @@ export default function BillingPage() {
       if (itemsRes.data) setMasterItems(itemsRes.data)
       if (stockRes.data) setStockLots(stockRes.data)
       if (inwardRes.data) setInwardVouchers(inwardRes.data)
+      // Load silver stock
+      const { data: silverPurchases } = await supabase.from('material_purchases').select('type, weight, sold_weight').in('type', ['silver_925', 'silver_ornaments'])
+      if (silverPurchases) {
+        const stock = { silver_925: 0, silver_ornaments: 0 }
+        silverPurchases.forEach(p => { stock[p.type] = (stock[p.type] || 0) + parseFloat(p.weight) - parseFloat(p.sold_weight) })
+        setSilverStock(stock)
+      }
+      // Load Gold 18K stock
+      const { data: goldPurchases } = await supabase.from('material_purchases').select('weight, sold_weight').eq('type', 'gold_18k')
+      if (goldPurchases) {
+        setGoldStock(goldPurchases.reduce((s, p) => s + parseFloat(p.weight) - parseFloat(p.sold_weight), 0))
+      }
       if (pendingEditId) {
         setEditInvoiceId(pendingEditId)
         setEditMode(true)
         await loadEditInvoice(pendingEditId, custRes.data || [], itemsRes.data || [])
       } else {
         await generateInvNo()
+        // Auto-fill gold rate from Price Calculator (24K with GST → 22K without GST)
+        const savedRate = localStorage.getItem('pc_goldRate')
+        if (savedRate) {
+          const parsed = parseFloat(savedRate.replace(/,/g, ''))
+          if (!isNaN(parsed) && parsed > 0) {
+            const converted = Math.round(parsed / 1.03 * 916 / 999)
+            setGoldRate(converted)
+            setGoldRateStr(converted.toLocaleString('en-IN'))
+          }
+        }
       }
     } catch (err) {
       addToast('Failed to load data', 'error')
@@ -106,11 +131,12 @@ export default function BillingPage() {
   }
 
   async function loadEditInvoice(invId, custList, miList) {
-    const { data: inv, error: invErr } = await supabase.from('invoices').select('*, invoice_items(*, item_master!inner(name, hsn_code))').eq('id', invId).single()
+    const { data: inv, error: invErr } = await supabase.from('invoices').select('*, invoice_items(*, item_master!left(name, hsn_code))').eq('id', invId).single()
     if (invErr || !inv) { addToast('Failed to load invoice', 'error'); setEditMode(false); return }
 
     const invGoldRate = parseFloat(inv.gold_rate) || 0
     if (invGoldRate) { setGoldRate(invGoldRate); setGoldRateStr(invGoldRate.toLocaleString('en-IN')) }
+    setUseCustomGoldRate(true)
     setDate(inv.date)
     setInvNo(inv.inv_no)
     setAdjAmt(parseFloat(inv.adj_amount) || 0)
@@ -127,19 +153,51 @@ export default function BillingPage() {
     const items = (inv.invoice_items || []).sort((a, b) => a.sno - b.sno)
     editOriginalItems.current = items
     setLineItems(items.map(item => {
+      if (!item.item_id) {
+        if (item.material_type === 'gold_18k') {
+          return {
+            item_id: 'gold18k',
+            description: item.description_extra || 'Gold Jewellery (18K)',
+            weight: item.weight.toString(),
+            labour_pct: item.labour_pct ? item.labour_pct.toString() : DEFAULT_LABOUR_PCT.toString(),
+            tax_pct: '0',
+            hallmark_charge: 0,
+            huid_enabled: false,
+            huid_code: '',
+            is_gold_18k: true,
+          }
+        }
+        return {
+          item_id: 'silver',
+          description: item.description_extra || 'Quick Silver',
+          weight: item.weight.toString(),
+          labour_pct: '0',
+          tax_pct: '0',
+          hallmark_charge: 0,
+          huid_enabled: false,
+          huid_code: '',
+          is_silver: true,
+          silver_rate: item.rate_per_gram ? item.rate_per_gram.toString() : '',
+          silver_type: item.material_type || 'silver_925',
+        }
+      }
       const mi = (miList || []).find(m => m.id === item.item_id)
+      const is18k = mi?.material_type === 'gold_18k'
+      const baseRate = is18k ? invGoldRate / 10 * 18 / 22 : invGoldRate / 10
       // Use stored labour_rate if available, else fallback to reverse calc
       const storedLabour = parseFloat(item.labour_rate)
-      const computedLabour = storedLabour > 0 ? storedLabour : (invGoldRate > 0 ? Math.max(0, parseFloat(item.rate_per_gram) - invGoldRate / 10) : 0)
+      const computedLabour = storedLabour > 0 ? storedLabour : (invGoldRate > 0 ? Math.max(0, parseFloat(item.rate_per_gram) - baseRate) : 0)
       return {
         item_id: item.item_id.toString(),
         description: mi?.name || item.item_master?.name || '',
         weight: item.weight.toString(),
-        labour_pct: item.labour_pct != null ? item.labour_pct.toString() : (storedLabour > 0 ? Math.round(computedLabour / (invGoldRate / 10) * 100) : DEFAULT_LABOUR_PCT).toString(),
+        labour_pct: item.labour_pct != null ? item.labour_pct.toString() : (storedLabour > 0 ? Math.round(computedLabour / baseRate * 100) : DEFAULT_LABOUR_PCT).toString(),
         tax_pct: item.tax_pct != null && item.tax_pct !== undefined ? item.tax_pct.toString() : DEFAULT_TAX_PCT.toString(),
         hallmark_charge: parseFloat(item.hallmark_charge) || 0,
         huid_enabled: item.huid,
         huid_code: item.huid_code || '',
+        is_silver: false,
+        silver_rate: '',
       }
     }))
 
@@ -219,6 +277,16 @@ export default function BillingPage() {
 
   function checkStock(itemId, weight, huidEnabled, excludeIndex) {
     if (!itemId || !weight) return null
+    if (itemId === 'silver') {
+      const line = lineItems[excludeIndex >= 0 ? excludeIndex : 0]
+      const avail = silverStock[line?.silver_type] || 0
+      const w = parseFloat(weight) || 0
+      return { available: w <= avail }
+    }
+    if (itemId === 'gold18k') {
+      const w = parseFloat(weight) || 0
+      return { available: w <= goldStock }
+    }
     const w = parseFloat(weight)
     if (!w) return null
     const item = masterItems.find(m => m.id === parseInt(itemId))
@@ -253,7 +321,15 @@ export default function BillingPage() {
   }
 
   function addLine() {
-    setLineItems([...lineItems, { item_id: '', description: '', weight: '', labour_pct: DEFAULT_LABOUR_PCT.toString(), tax_pct: taxPct, hallmark_charge: 0, huid_enabled: true, huid_code: '' }])
+    setLineItems([...lineItems, { item_id: '', description: '', weight: '', labour_pct: DEFAULT_LABOUR_PCT.toString(), tax_pct: taxPct, hallmark_charge: 0, huid_enabled: true, huid_code: '', is_silver: false, silver_rate: '', silver_type: 'silver_925' }])
+  }
+
+  function addSilverLine() {
+    setLineItems([...lineItems, { item_id: 'silver', description: 'Silver 925', weight: '', labour_pct: '0', tax_pct: '0', hallmark_charge: 0, huid_enabled: false, huid_code: '', is_silver: true, silver_rate: '', silver_type: 'silver_925' }])
+  }
+
+  function addGold18kLine() {
+    setLineItems([...lineItems, { item_id: 'gold18k', description: 'Gold Jewellery (18K)', weight: '', labour_pct: DEFAULT_LABOUR_PCT.toString(), tax_pct: '0', hallmark_charge: 0, huid_enabled: false, huid_code: '', is_gold_18k: true }])
   }
 
   function updateLine(index, field, value) {
@@ -265,10 +341,17 @@ export default function BillingPage() {
         if (item) {
           newLine.description = item.name
           newLine.hallmark_charge = Number(item.hallmark_charge)
+          newLine.is_silver = false
+          newLine.silver_rate = ''
+          newLine.is_gold_18k = false
         }
       }
       if (field === 'huid_enabled' && value === false) {
         newLine.huid_code = ''
+      }
+      if (field === 'silver_type') {
+        newLine.description = value === 'silver_925' ? 'Silver 925' : 'Silver Ornaments'
+        newLine.silver_rate = ''
       }
       return newLine
     })
@@ -281,7 +364,7 @@ export default function BillingPage() {
   }
 
   function getFilteredLots(line) {
-    if (!line.item_id) return []
+    if (!line.item_id || line.is_silver || line.is_gold_18k) return []
     const item = masterItems.find(m => m.id === parseInt(line.item_id))
     if (!item) return []
     let lots = stockLots.filter(l => l.item_name === item.name && l.avail_pcs > 0)
@@ -293,10 +376,19 @@ export default function BillingPage() {
   // Calculations — discount applied BEFORE tax per GST
   function calcLinePrice(line) {
     const w = parseFloat(line.weight) || 0
-    const labourPct = parseFloat(line.labour_pct) || DEFAULT_LABOUR_PCT
-    const lab = goldPerGram * labourPct / 100
-    const ratePerGram = goldPerGram + lab
-    const price = w * ratePerGram
+    if (line.is_silver) {
+      const rate = parseFloat(line.silver_rate) || 0
+      const price = w * rate
+      return { ratePerGram: rate, price, hc: 0 }
+    }
+    const item = masterItems.find(m => m.id === parseInt(line.item_id))
+    const is18k = line.is_gold_18k || item?.material_type === 'gold_18k'
+    const baseRate = is18k ? goldPerGram * 18 / 22 : goldPerGram
+    const goldValue = w * baseRate
+    const lp = parseFloat(line.labour_pct); const labourPct = !isNaN(lp) ? lp : DEFAULT_LABOUR_PCT
+    const labour = goldValue * labourPct / 100
+    const price = goldValue + labour
+    const ratePerGram = baseRate * (1 + labourPct / 100)
     const hc = parseFloat(line.hallmark_charge) || 0
     return { ratePerGram, price, hc }
   }
@@ -339,7 +431,14 @@ export default function BillingPage() {
     for (const l of validLines) {
       const origIdx = lineItems.indexOf(l)
       if (!parseFloat(l.weight)) { addToast(`Item #${origIdx+1}: enter a valid weight`, 'error'); savingRef.current = false; return }
-      if (l.labour_pct === '' || isNaN(parseFloat(l.labour_pct))) { addToast(`Item #${origIdx+1}: enter labour %`, 'error'); savingRef.current = false; return }
+      if (l.is_silver) {
+        if (l.silver_rate === '' || isNaN(parseFloat(l.silver_rate)) || parseFloat(l.silver_rate) <= 0) { addToast(`Item #${origIdx+1}: enter a valid silver rate`, 'error'); savingRef.current = false; return }
+      } else if (l.is_gold_18k) {
+        if (l.labour_pct === '' || isNaN(parseFloat(l.labour_pct))) { addToast(`Item #${origIdx+1}: enter labour %`, 'error'); savingRef.current = false; return }
+      } else {
+        if (l.labour_pct === '' || isNaN(parseFloat(l.labour_pct))) { addToast(`Item #${origIdx+1}: enter labour %`, 'error'); savingRef.current = false; return }
+        if (!l.item_id || isNaN(parseInt(l.item_id))) { addToast(`Item #${origIdx+1}: select an item`, 'error'); savingRef.current = false; return }
+      }
     }
     if (paymentMode === 'BOTH' && Math.abs(parseFloat(cashAmt || 0) + parseFloat(bankAmt || 0) - grandTotal) > 0.01) {
       addToast('Cash + Bank amount must equal Grand Total', 'error'); savingRef.current = false; return
@@ -353,6 +452,8 @@ export default function BillingPage() {
       if ((editMode || editModeRef.current) && editInvoiceId) {
         invId = editInvoiceId
         finalInvNo = invNo
+        const { error: revMatErr } = await supabase.rpc('reverse_material_sale', { p_invoice_id: invId })
+        if (revMatErr) throw revMatErr
         const { error: revErr } = await supabase.rpc('reverse_invoice_stock', { p_invoice_id: invId })
         if (revErr) throw revErr
         reversed = true
@@ -378,11 +479,11 @@ export default function BillingPage() {
         if (!customerId) {
           const { data: newCustData, error: custErr } = await supabase.from('customers').insert({
             name: newCust.name.trim(),
-            phone: newCust.phone.trim(),
+            phone: cleanedPhone,
             address: newCust.address.trim(),
             state: newCust.state,
             aadhaar: newCust.aadhaar.trim(),
-            pan: newCust.pan.trim(),
+            pan: newCust.pan.trim().toUpperCase(),
             pincode: newCust.pincode.trim(),
             gstin: newCust.gstin.trim(),
           }).select('id').single()
@@ -428,6 +529,44 @@ export default function BillingPage() {
       const invoiceItemsData = validLines.map((line, idx) => {
         const origIdx = lineItems.indexOf(line)
         const c = lineTotals[origIdx >= 0 ? origIdx : idx]
+        if (line.is_silver) {
+          return {
+            invoice_id: invId,
+            item_id: null,
+            weight: parseFloat(line.weight) || 0,
+            rate_per_gram: Math.round((parseFloat(line.silver_rate) || 0) * 100) / 100,
+            price: Math.round(c.price * 100) / 100,
+            tax_amount: 0,
+            tax_pct: 0,
+            labour_rate: 0,
+            labour_pct: 0,
+            hallmark_charge: 0,
+            huid: false,
+            huid_code: '',
+            description_extra: line.description || 'Quick Silver',
+            material_type: line.silver_type,
+            sno: idx + 1,
+          }
+        }
+        if (line.is_gold_18k) {
+          return {
+            invoice_id: invId,
+            item_id: null,
+            weight: parseFloat(line.weight) || 0,
+            rate_per_gram: Math.round(c.ratePerGram * 100) / 100,
+            price: Math.round(c.price * 100) / 100,
+            tax_amount: 0,
+            tax_pct: 0,
+            labour_rate: Math.round(goldPerGram * 18 / 22 * ((!isNaN(parseFloat(line.labour_pct)) ? parseFloat(line.labour_pct) : DEFAULT_LABOUR_PCT) / 100) * 100) / 100,
+            labour_pct: !isNaN(parseFloat(line.labour_pct)) ? parseFloat(line.labour_pct) : DEFAULT_LABOUR_PCT,
+            hallmark_charge: 0,
+            huid: false,
+            huid_code: '',
+            description_extra: line.description || 'Gold Jewellery (18K)',
+            material_type: 'gold_18k',
+            sno: idx + 1,
+          }
+        }
         return {
           invoice_id: invId,
           item_id: parseInt(line.item_id),
@@ -436,8 +575,8 @@ export default function BillingPage() {
           price: Math.round(c.price * 100) / 100,
           tax_amount: Math.round(c.tax * 100) / 100,
           tax_pct: parseFloat(line.tax_pct) || DEFAULT_TAX_PCT,
-          labour_rate: Math.round(goldPerGram * (parseFloat(line.labour_pct) || DEFAULT_LABOUR_PCT) / 100 * 100) / 100,
-          labour_pct: parseFloat(line.labour_pct) || DEFAULT_LABOUR_PCT,
+          labour_rate: (() => { const _item = masterItems.find(m => m.id === parseInt(line.item_id)); const _is18k = _item?.material_type === 'gold_18k'; const _base = _is18k ? goldPerGram * 18 / 22 : goldPerGram; const _lp = parseFloat(line.labour_pct); return Math.round(_base * ((!isNaN(_lp) ? _lp : DEFAULT_LABOUR_PCT) / 100) * 100) / 100 })(),
+          labour_pct: !isNaN(parseFloat(line.labour_pct)) ? parseFloat(line.labour_pct) : DEFAULT_LABOUR_PCT,
           hallmark_charge: c.hc,
           huid: line.huid_enabled,
           huid_code: line.huid_code || '',
@@ -454,6 +593,16 @@ export default function BillingPage() {
           await supabase.from('invoices').delete().eq('id', invId)
         }
         throw procErr
+      }
+
+      const { error: matProcErr } = await supabase.rpc('process_material_sale', { p_invoice_id: invId })
+      if (matProcErr) {
+        await supabase.rpc('reverse_invoice_stock', { p_invoice_id: invId }).catch(() => {})
+        if (!editMode) {
+          await supabase.from('invoice_items').delete().eq('invoice_id', invId)
+          await supabase.from('invoices').delete().eq('id', invId)
+        }
+        throw matProcErr
       }
 
       // Update inv_sequences (both create and edit — handles manually entered higher numbers)
@@ -477,13 +626,23 @@ export default function BillingPage() {
       addToast(editMode ? `Invoice ${finalInvNo} updated` : `Invoice ${finalInvNo} created`, 'success')
       const { data: freshLots } = await supabase.rpc('get_stock_lots')
       if (freshLots) setStockLots(freshLots)
+      const { data: freshGold } = await supabase.from('material_purchases').select('weight, sold_weight').eq('type', 'gold_18k')
+      if (freshGold) setGoldStock(freshGold.reduce((s, p) => s + parseFloat(p.weight) - parseFloat(p.sold_weight), 0))
+      const { data: freshSilver } = await supabase.from('material_purchases').select('type, weight, sold_weight').in('type', ['silver_925', 'silver_ornaments'])
+      if (freshSilver) {
+        const stock = { silver_925: 0, silver_ornaments: 0 }
+        freshSilver.forEach(p => { stock[p.type] = (stock[p.type] || 0) + parseFloat(p.weight) - parseFloat(p.sold_weight) })
+        setSilverStock(stock)
+      }
       resetForm()
     } catch (err) {
       addToast(err.message || 'Failed to save invoice', 'error')
       console.error('Invoice error:', err)
       // #1/#16: restore stock and reload form on edit failure
       if (reversed && editModeRef.current && editInvoiceId) {
+        await supabase.rpc('reverse_material_sale', { p_invoice_id: editInvoiceId }).catch(() => {})
         await supabase.rpc('process_invoice_stock', { p_invoice_id: editInvoiceId }).catch(() => {})
+        await supabase.rpc('process_material_sale', { p_invoice_id: editInvoiceId }).catch(() => {})
         const { data: restored } = await supabase.from('invoices').select('*, invoice_items(*)').eq('id', editInvoiceId).single()
         if (restored) {
           const restoredCust = customers.find(c => c.id === restored.customer_id)
@@ -498,9 +657,39 @@ export default function BillingPage() {
           if (restored.gold_rate) { setGoldRate(parseFloat(restored.gold_rate)); setGoldRateStr(parseFloat(restored.gold_rate).toLocaleString('en-IN')) }
           const restoredGoldRate = parseFloat(restored.gold_rate) || 0
           setLineItems((restored.invoice_items || []).map(item => {
+            if (!item.item_id) {
+              if (item.material_type === 'gold_18k') {
+                return {
+                  item_id: 'gold18k',
+                  description: item.description_extra || 'Gold Jewellery (18K)',
+                  weight: item.weight.toString(),
+                  labour_pct: item.labour_pct ? item.labour_pct.toString() : DEFAULT_LABOUR_PCT.toString(),
+                  tax_pct: '0',
+                  hallmark_charge: 0,
+                  huid_enabled: false,
+                  huid_code: '',
+                  is_gold_18k: true,
+                }
+              }
+              return {
+                item_id: 'silver',
+                description: item.description_extra || 'Quick Silver',
+                weight: item.weight.toString(),
+                labour_pct: '0',
+                tax_pct: '0',
+                hallmark_charge: 0,
+                huid_enabled: false,
+                huid_code: '',
+                is_silver: true,
+                silver_rate: item.rate_per_gram ? item.rate_per_gram.toString() : '',
+                silver_type: item.material_type || 'silver_925',
+              }
+            }
             const mi = masterItems.find(m => m.id === item.item_id)
+            const is18k = mi?.material_type === 'gold_18k'
+            const restoredBaseRate = restoredGoldRate > 0 ? (is18k ? restoredGoldRate / 10 * 18 / 22 : restoredGoldRate / 10) : 0
             const storedLabourPct = parseFloat(item.labour_pct)
-            const labourPct = storedLabourPct > 0 ? storedLabourPct : (restoredGoldRate > 0 ? Math.round((parseFloat(item.rate_per_gram) - restoredGoldRate / 10) / (restoredGoldRate / 10) * 100) : DEFAULT_LABOUR_PCT)
+            const labourPct = storedLabourPct > 0 ? storedLabourPct : (restoredBaseRate > 0 ? Math.round((parseFloat(item.rate_per_gram) - restoredBaseRate) / restoredBaseRate * 100) : DEFAULT_LABOUR_PCT)
             return {
               item_id: item.item_id.toString(),
               description: mi?.name || '',
@@ -510,6 +699,8 @@ export default function BillingPage() {
               hallmark_charge: parseFloat(item.hallmark_charge) || 0,
               huid_enabled: item.huid,
               huid_code: item.huid_code || '',
+              is_silver: false,
+              silver_rate: '',
             }
           }))
         }
@@ -526,7 +717,7 @@ export default function BillingPage() {
     setIsNewCustomer(false)
     setNewCust({ name: '', phone: '', address: '', state: 'Haryana', aadhaar: '', pan: '', pincode: '', gstin: '' })
     setCustSearch('')
-    setLineItems([{ item_id: '', description: '', weight: '', labour_pct: DEFAULT_LABOUR_PCT.toString(), tax_pct: taxPct, hallmark_charge: 0, huid_enabled: true, huid_code: '' }])
+    setLineItems([{ item_id: '', description: '', weight: '', labour_pct: DEFAULT_LABOUR_PCT.toString(), tax_pct: taxPct, hallmark_charge: 0, huid_enabled: true, huid_code: '', is_silver: false, silver_rate: '', silver_type: 'silver_925' }])
     setAdjAmt(0)
     setAdjBillNo('')
     setAdjVoucherId(null)
@@ -566,9 +757,55 @@ export default function BillingPage() {
             </div>
             <div className="form-group">
               <label className="label">Gold Rate /10g</label>
-              <div className="input-group">
-                <span className="input-addon">₹</span>
-                <input className="input input-group-field" type="text" inputMode="decimal" value={goldRateStr} onChange={e => { const v = e.target.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1'); setGoldRateStr(v); setGoldRate(parseFloat(v) || 0) }} onBlur={e => { const n = parseFloat(e.target.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1')) || 0; setGoldRateStr(n.toLocaleString('en-IN')) }} onFocus={e => { setGoldRateStr(goldRate ? goldRate.toString() : '') }} />
+              <div className="input-group" style={{ display: 'flex', gap: '0.5rem', alignItems: 'stretch', border: 'none', background: 'none' }}>
+                <label style={{
+                  display: 'flex', alignItems: 'center', gap: '0.4rem',
+                  background: 'var(--bg-card)', border: '1.5px solid var(--border)',
+                  borderRadius: 'var(--radius)', padding: '0.55rem 0.75rem',
+                  cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600,
+                  color: 'var(--text-secondary)', whiteSpace: 'nowrap',
+                  transition: 'all 0.12s',
+                  ...(useCustomGoldRate ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : {})
+                }}>
+                  <input type="checkbox" style={{ accentColor: 'var(--accent)' }} checked={useCustomGoldRate} onChange={e => {
+                    const checked = e.target.checked
+                    setUseCustomGoldRate(checked)
+                    if (!checked) {
+                      const savedRate = localStorage.getItem('pc_goldRate')
+                      if (savedRate) {
+                        const parsed = parseFloat(savedRate.replace(/,/g, ''))
+                        if (!isNaN(parsed) && parsed > 0) {
+                          const converted = Math.round(parsed / 1.03 * 916 / 999)
+                          setGoldRate(converted)
+                          setGoldRateStr(converted.toLocaleString('en-IN'))
+                        }
+                      }
+                    }
+                  }} />
+                  Custom
+                </label>
+                <div style={{ display: 'flex', alignItems: 'stretch', borderRadius: 'var(--radius)', overflow: 'hidden', border: '1.5px solid var(--border)', background: 'var(--bg)', flex: 1, ...(!useCustomGoldRate ? { opacity: 0.7 } : {}) }}>
+                  <span className="input-addon">₹</span>
+                  <input className="input input-group-field" type="text" inputMode="decimal"
+                    style={{ border: 'none', background: 'var(--bg-card)', ...(!useCustomGoldRate ? { cursor: 'not-allowed' } : {}) }}
+                    value={goldRateStr}
+                    disabled={!useCustomGoldRate}
+                    onChange={e => {
+                      if (!useCustomGoldRate) return
+                      const v = e.target.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1')
+                      setGoldRateStr(v)
+                      setGoldRate(parseFloat(v) || 0)
+                    }}
+                    onBlur={e => {
+                      if (!useCustomGoldRate) return
+                      const n = parseFloat(e.target.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1')) || 0
+                      setGoldRateStr(n.toLocaleString('en-IN'))
+                    }}
+                    onFocus={e => {
+                      if (!useCustomGoldRate) return
+                      setGoldRateStr(goldRate ? goldRate.toString() : '')
+                    }} />
+                </div>
               </div>
             </div>
           </div>
@@ -670,11 +907,93 @@ export default function BillingPage() {
                     </div>
 
                     <div className="form-row" style={{ gap: '6px', alignItems: 'stretch' }}>
-                      <div style={{ flex: '1.6', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.4rem 0.5rem' }}>
-                        <div style={{ fontSize: '0.55rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: '4px' }}>Item Details</div>
+                      {(() => {
+                        if (line.is_silver) {
+                          return (
+                            <div style={{ flex: '1', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.4rem 0.5rem' }}>
+                              <div style={{ fontSize: '0.55rem', fontWeight: 700, color: 'var(--text-secondary)', letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: '4px' }}>Silver</div>
+                              <div className="form-group" style={{ marginBottom: '6px' }}>
+                                <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Type</label>
+                                <select className="input" value={line.silver_type} onChange={e => updateLine(i, 'silver_type', e.target.value)} style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem' }}>
+                                  <option value="silver_925">Silver 925</option>
+                                  <option value="silver_ornaments">Silver Ornaments</option>
+                                </select>
+                              </div>
+                              <div className="form-group" style={{ marginBottom: '6px' }}>
+                                <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Description</label>
+                                <input className="input" type="text" value={line.description}
+                                  onChange={e => updateLine(i, 'description', e.target.value)} style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
+                              </div>
+                              <div className="form-row" style={{ gap: '6px' }}>
+                                <div className="form-group" style={{ flex: '1' }}>
+                                  <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Weight (g)</label>
+                                  <input className="input" type="number" step="0.001" min="0" value={line.weight}
+                                    onChange={e => updateLine(i, 'weight', e.target.value)} placeholder="0.000" style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
+                                </div>
+                                <div className="form-group" style={{ flex: '1' }}>
+                                  <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Rate /g</label>
+                                  <input className="input" type="number" step="0.01" min="0" value={line.silver_rate}
+                                    onChange={e => updateLine(i, 'silver_rate', e.target.value)} placeholder="0.00" style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
+                                </div>
+                              </div>
+                              {line.weight && (() => {
+                                const w = parseFloat(line.weight) || 0
+                                const avail = silverStock[line.silver_type] || 0
+                                return <div style={{ marginTop: '2px' }}>
+                                  <span className={w <= avail ? 'badge badge-green' : 'badge badge-red'} style={{ fontSize: '9px' }}>{w <= avail ? '✓ ' + (avail - w).toFixed(3) + 'g avail' : '✗ Only ' + avail.toFixed(3) + 'g avail'}</span>
+                                </div>
+                              })()}
+                              {c.ratePerGram > 0 && (
+                                <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)', marginTop: '2px' }}>
+                                  {fmt(c.price)} @ {fmt(c.ratePerGram)}/g
+                                </div>
+                              )}
+                            </div>
+                          )
+                        }
+                        if (line.is_gold_18k) {
+                          const gold18kBase = goldPerGram * 18 / 22
+                          return (
+                            <div style={{ flex: '1', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.4rem 0.5rem' }}>
+                              <div style={{ fontSize: '0.55rem', fontWeight: 700, color: 'var(--text-secondary)', letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: '4px' }}>Gold 18K</div>
+                              <div className="form-group" style={{ marginBottom: '6px' }}>
+                                <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Description</label>
+                                <input className="input" type="text" value={line.description}
+                                  onChange={e => updateLine(i, 'description', e.target.value)} style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
+                              </div>
+                              <div className="form-row" style={{ gap: '6px' }}>
+                                <div className="form-group" style={{ flex: '1' }}>
+                                  <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Weight (g)</label>
+                                  <input className="input" type="number" step="0.001" min="0" value={line.weight}
+                                    onChange={e => updateLine(i, 'weight', e.target.value)} placeholder="0.000" style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
+                                </div>
+                                <div className="form-group" style={{ flex: '0.8' }}>
+                                  <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Labour %</label>
+                                  <input className="input" type="number" step="0.1" min="0" value={line.labour_pct}
+                                    onChange={e => updateLine(i, 'labour_pct', e.target.value)} placeholder={DEFAULT_LABOUR_PCT.toString()} style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
+                                </div>
+                              </div>
+                              {line.weight && (() => {
+                                const w = parseFloat(line.weight) || 0
+                                return <div style={{ marginTop: '2px' }}>
+                                  <span className={w <= goldStock ? 'badge badge-green' : 'badge badge-red'} style={{ fontSize: '9px' }}>{w <= goldStock ? '✓ ' + (goldStock - w).toFixed(3) + 'g avail' : '✗ Only ' + goldStock.toFixed(3) + 'g avail'}</span>
+                                </div>
+                              })()}
+                              {c.ratePerGram > 0 && (
+                                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                                  <span style={{ fontWeight: 700 }}>{fmt(c.price)} @ {fmt(c.ratePerGram)}/g</span>
+                                  <span className="text-muted" style={{ fontSize: '0.65rem' }}> ({fmt(gold18kBase)}/g + L {line.labour_pct || DEFAULT_LABOUR_PCT}%)</span>
+                                </div>
+                              )}
+                            </div>
+                          )
+                        }
+                        return [
+                          <div key="details" style={{ flex: '1.6', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.4rem 0.5rem' }}>
+                            <div style={{ fontSize: '0.55rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: '4px' }}>Item Details</div>
                         <div>
                           <ComboBox
-                            options={masterItems.map(m => ({ value: m.id.toString(), label: `${m.name} (${m.purity})` }))}
+                            options={masterItems.filter(m => m.material_type !== 'gold_18k').map(m => ({ value: m.id.toString(), label: `${m.name} (${m.purity})` }))}
                             value={line.item_id?.toString()}
                             onChange={val => updateLine(i, 'item_id', val)}
                             placeholder="Type to search item..."
@@ -737,75 +1056,111 @@ export default function BillingPage() {
                             <input className="input" type="number" step="0.1" min="0" value={line.labour_pct}
                               onChange={e => updateLine(i, 'labour_pct', e.target.value)} placeholder="10" style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
                           </div>
-                          <div className="form-group" style={{ flex: '1.2' }}>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '6px' }}>
+                          <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                            <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600, marginBottom: 0 }}>HUID</label>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '2px', cursor: 'pointer', fontSize: '0.75rem' }}>
+                              <input type="radio" name={`huid_${i}`} checked={line.huid_enabled === true}
+                                onChange={() => updateLine(i, 'huid_enabled', true)} style={{ margin: 0 }} /> Y
+                            </label>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '2px', cursor: 'pointer', fontSize: '0.75rem' }}>
+                              <input type="radio" name={`huid_${i}`} checked={line.huid_enabled === false}
+                                onChange={() => updateLine(i, 'huid_enabled', false)} style={{ margin: 0 }} /> N
+                            </label>
+                            {line.huid_enabled && (
+                              <input className="input" type="text" value={line.huid_code}
+                                onChange={e => updateLine(i, 'huid_code', e.target.value)} placeholder="Code" style={{ flex: '1', minWidth: '50px', padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
+                            )}
+                          </div>
+                          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                            <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600, marginBottom: 0, whiteSpace: 'nowrap' }}>Tax %</label>
+                            <input className="input" type="number" step="0.01" min="0" value={line.tax_pct}
+                              onChange={e => updateLine(i, 'tax_pct', e.target.value)} style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem', maxWidth: '80px' }} />
+                          </div>
+                        </div>
+                          </div>,
+                          <div key="rate" style={{ flex: '1', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.4rem 0.5rem' }}>
                             <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Rate/g</label>
-                            <div className="font-mono" style={{ fontSize: '0.8rem', padding: '0.3rem 0', display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
-                              {c.ratePerGram > 0 ? (
-                                <><span style={{ fontWeight: 700 }}>{fmt(c.ratePerGram)}</span><span className="text-muted" style={{ fontSize: '0.7rem' }}>(G {fmt(goldPerGram)} + L {(c.ratePerGram - goldPerGram).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} @ {line.labour_pct || DEFAULT_LABOUR_PCT}%)</span></>
+                            <div className="font-mono">
+                              {goldPerGram > 0 ? (
+                                (() => {
+                                  const item = masterItems.find(m => m.id === parseInt(line.item_id))
+                                  const is18k = item?.material_type === 'gold_18k'
+                                  const baseRate = is18k ? goldPerGram * 18 / 22 : goldPerGram
+                                  const w = parseFloat(line.weight) || 0
+                                  const lp = parseFloat(line.labour_pct); const labourPct = !isNaN(lp) ? lp : DEFAULT_LABOUR_PCT
+                                  const goldValue = w * baseRate
+                                  const labour = goldValue * labourPct / 100
+                                  const total = goldValue + labour
+                                  return (
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+                                      <thead>
+                                        <tr>
+                                          <th style={{ width: '50%', border: '1px solid var(--border)', padding: '2px 6px', textAlign: 'center', fontWeight: 700, color: 'var(--text-muted)', background: 'var(--bg-secondary)', fontSize: '0.65rem' }}>Gold</th>
+                                          <th style={{ width: '50%', border: '1px solid var(--border)', padding: '2px 6px', textAlign: 'center', fontWeight: 700, color: 'var(--text-muted)', background: 'var(--bg-secondary)', fontSize: '0.65rem' }}>L {labourPct}%</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        <tr>
+                                          <td style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center', fontWeight: 600, color: 'var(--text-secondary)' }}>{fmt(goldValue)}</td>
+                                          <td style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center', fontWeight: 600, color: 'var(--text-secondary)' }}>{fmt(labour)}</td>
+                                        </tr>
+                                        <tr>
+                                          <td colSpan={2} style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center', fontWeight: 700, color: 'var(--accent)' }}>{fmt(total)}</td>
+                                        </tr>
+                                      </tbody>
+                                    </table>
+                                  )
+                                })()
                               ) : <span className="text-muted" style={{ fontSize: '0.7rem' }}>—</span>}
                             </div>
-                          </div>
-                        </div>
-                      </div>
-                      <div style={{ flex: '1', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.4rem 0.5rem' }}>
-                        <div style={{ fontSize: '0.55rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: '4px' }}>Identification</div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
-                          <div>
-                            <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>HUID</label>
-                            <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
-                              <label style={{ display: 'flex', alignItems: 'center', gap: '2px', cursor: 'pointer', fontSize: '0.75rem' }}>
-                                <input type="radio" name={`huid_${i}`} checked={line.huid_enabled === true}
-                                  onChange={() => updateLine(i, 'huid_enabled', true)} style={{ margin: 0 }} /> Y
-                              </label>
-                              <label style={{ display: 'flex', alignItems: 'center', gap: '2px', cursor: 'pointer', fontSize: '0.75rem' }}>
-                                <input type="radio" name={`huid_${i}`} checked={line.huid_enabled === false}
-                                  onChange={() => updateLine(i, 'huid_enabled', false)} style={{ margin: 0 }} /> N
-                              </label>
-                              {line.huid_enabled && (
-                                <input className="input" type="text" value={line.huid_code}
-                                  onChange={e => updateLine(i, 'huid_code', e.target.value)} placeholder="Code" style={{ flex: '1', minWidth: '50px', padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
-                              )}
+                            <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: '4px', marginTop: '8px' }}>Line Totals</div>
+                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+                              <thead>
+                                <tr>
+                                  <th style={{ width: '25%', border: '1px solid var(--border)', padding: '2px 6px', textAlign: 'center', fontWeight: 700, color: 'var(--text-muted)', background: 'var(--bg-secondary)', fontSize: '0.65rem' }}></th>
+                                  <th style={{ width: '37.5%', border: '1px solid var(--border)', padding: '2px 6px', textAlign: 'center', fontWeight: 700, color: 'var(--text-muted)', background: 'var(--bg-secondary)', fontSize: '0.65rem' }}>Price</th>
+                                  <th style={{ width: '37.5%', border: '1px solid var(--border)', padding: '2px 6px', textAlign: 'center', fontWeight: 700, color: 'var(--text-muted)', background: 'var(--bg-secondary)', fontSize: '0.65rem' }}>Tax</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                <tr>
+                                  <td style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center', fontWeight: 700, color: 'var(--text-secondary)', fontSize: '0.7rem' }}>Gold</td>
+                                  <td style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center', fontWeight: 700 }}>{fmt(c.price)}{discAmt > 0 ? <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '2px' }}>({fmt(c.discountedPrice)})</span> : ''}</td>
+                                  <td style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center' }}>{fmt(c.tax)}</td>
+                                </tr>
+                                <tr>
+                                  <td style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center', fontWeight: 700, color: 'var(--text-secondary)', fontSize: '0.7rem' }}>Hallmark</td>
+                                  <td style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center', fontWeight: 700 }}>{fmt(c.hc)}</td>
+                                  <td style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center' }}>{fmt(c.hcTax)}</td>
+                                </tr>
+                              </tbody>
+                            </table>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
+                              <span style={{ fontWeight: 700, fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: 'var(--text-secondary)' }}>Total</span>
+                              <span className="font-mono" style={{ fontWeight: 700, color: 'var(--accent)', fontSize: '0.9rem' }}>{fmt(c.total)}</span>
                             </div>
                           </div>
-                          <div>
-                            <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Tax %</label>
-                            <input className="input" type="number" step="0.01" min="0" value={line.tax_pct}
-                               onChange={e => updateLine(i, 'tax_pct', e.target.value)} style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
-                          </div>
-                        </div>
-                      </div>
+                        ]
+                      })()}
+                    </div>
                     </div>
 
-                    <div style={{ borderTop: '1px solid var(--border)', paddingTop: '6px' }}>
-                      <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: '4px' }}>Line Totals</div>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
-                        <tbody>
-                          <tr>
-                            <td style={{ border: '1px solid var(--border)', padding: '3px 8px', fontWeight: 600, fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: 'var(--text-secondary)' }}>Price</td>
-                            <td className="font-mono" style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'right', fontWeight: 700, fontSize: '0.85rem' }}>{fmt(c.price)}{discAmt > 0 ? <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginLeft: '2px' }}>({fmt(c.discountedPrice)})</span> : ''}</td>
-                            <td style={{ border: '1px solid var(--border)', padding: '3px 8px', fontWeight: 600, fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: 'var(--text-secondary)' }}>Tax</td>
-                            <td className="font-mono" style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'right', fontSize: '0.85rem' }}>{fmt(c.tax)}</td>
-                          </tr>
-                          <tr>
-                            <td style={{ border: '1px solid var(--border)', padding: '3px 8px', fontWeight: 600, fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: 'var(--text-secondary)' }}>Hallmark</td>
-                            <td className="font-mono" style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'right', fontSize: '0.85rem' }}>{fmt(c.hc)}</td>
-                            <td style={{ border: '1px solid var(--border)', padding: '3px 8px', fontWeight: 600, fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: 'var(--text-secondary)' }}>H.Tax</td>
-                            <td className="font-mono" style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'right', fontSize: '0.85rem' }}>{fmt(c.hcTax)}</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', marginTop: '4px', fontSize: '0.9rem' }}>
-                        <span style={{ fontWeight: 700, fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.03em', marginRight: '8px' }}>Total</span>
-                        <span className="font-mono" style={{ fontWeight: 700, color: 'var(--accent)', fontSize: '1rem' }}>{fmt(c.total)}</span>
-                      </div>
-                    </div>
-                  </div>
                 )
               })}
             </div>
-            <button type="button" className="btn btn-sm btn-outline" onClick={addLine} style={{ marginTop: '0.75rem', width: '100%' }}>
-              <Plus size={14} /> Add Item
-            </button>
+            <div style={{ display: 'flex', gap: '8px', marginTop: '0.75rem' }}>
+              <button type="button" className="btn btn-sm btn-outline" onClick={addLine} style={{ flex: 1 }}>
+                <Plus size={14} /> Add Item
+              </button>
+              <button type="button" className="btn btn-sm btn-outline" onClick={addGold18kLine} style={{ flex: 1 }}>
+                <Plus size={14} /> Add Gold 18K
+              </button>
+              <button type="button" className="btn btn-sm btn-outline" onClick={addSilverLine} style={{ flex: 1 }}>
+                <Plus size={14} /> Add Silver
+              </button>
+            </div>
           </div>
         </div>
 

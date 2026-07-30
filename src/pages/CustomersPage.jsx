@@ -12,6 +12,8 @@ export default function CustomersPage() {
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState({ name: '', address: '', phone: '', state: 'Haryana', aadhaar: '', pan: '', pincode: '', gstin: '' })
+  const [confirmDelete, setConfirmDelete] = useState(null)
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => { loadCustomers() }, [])
 
@@ -58,13 +60,23 @@ export default function CustomersPage() {
   }
 
   async function deleteCustomer(id, name) {
-    if (!window.confirm(`Delete customer "${name}"? This cannot be undone.`)) return
+    setConfirmDelete({ id, name })
+  }
+
+  async function handleConfirmDelete() {
+    if (!confirmDelete) return
+    setDeleting(true)
+    const { id, name } = confirmDelete
     const { error } = await supabase.from('customers').delete().eq('id', id)
     if (error) {
       addToast(error.code === '23503' ? `Cannot delete "${name}" — linked to existing invoices.` : error.message, 'error')
+      setDeleting(false)
+      setConfirmDelete(null)
       return
     }
     addToast('Customer deleted', 'success')
+    setDeleting(false)
+    setConfirmDelete(null)
     loadCustomers()
   }
 
@@ -230,6 +242,24 @@ export default function CustomersPage() {
                 <button type="submit" className="btn btn-primary">{editing ? 'Update' : 'Add'}</button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {confirmDelete && (
+        <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) { setConfirmDelete(null); setDeleting(false) } }}>
+          <div className="modal-card">
+            <div className="modal-header">
+              <h3 className="modal-title">Delete Customer</h3>
+              <button className="modal-close" onClick={() => { setConfirmDelete(null); setDeleting(false) }}><X size={20} /></button>
+            </div>
+            <div style={{ padding: '1rem 1.5rem' }}>
+              <p>Delete customer <strong>"{confirmDelete.name}"</strong>? This cannot be undone.</p>
+            </div>
+            <div className="flex gap-1" style={{ justifyContent: 'flex-end', padding: '0 1.5rem 1.25rem' }}>
+              <button className="btn btn-outline" onClick={() => { setConfirmDelete(null); setDeleting(false) }}>Cancel</button>
+              <button className="btn btn-danger" onClick={handleConfirmDelete} disabled={deleting}>{deleting ? 'Deleting...' : 'Delete'}</button>
+            </div>
           </div>
         </div>
       )}

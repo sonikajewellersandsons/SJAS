@@ -1,9 +1,12 @@
 ﻿import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
-const SUPABASE_ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!
-const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL')
+const SUPABASE_ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')
+const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !SERVICE_KEY) {
+  throw new Error('Missing required environment variables')
+}
 
 interface Invoice {
   id: number; inv_no: string; date: string; customer_id: number | null
@@ -15,7 +18,7 @@ interface Invoice {
   payment_mode: string; cash_amt: number; bank_amt: number
   gold_rate: number; irn: string | null
 }
-interface InvItem { id: number; item_id: number; weight: number; rate_per_gram: number; price: number; tax_amount: number; hallmark_charge: number; sno: number; huid: boolean; huid_code: string; item_master: { name: string; hsn_code: string; purity: string } }
+interface InvItem { id: number; item_id: number | null; weight: number; rate_per_gram: number; price: number; tax_amount: number; hallmark_charge: number; sno: number; huid: boolean; huid_code: string; description_extra?: string; material_type?: string; item_master?: { name: string; hsn_code: string; purity: string } | null }
 interface DiamondItem { id: number; code: string; description: string; weight: number; mrp: number; hallmark_charge: number; tax_amount: number }
 interface Customer { id: number; name: string; address: string; phone: string; state: string; gstin: string; pan: string; pincode: string }
 interface Settings { [key: string]: any }
@@ -147,6 +150,7 @@ function buildHtml(inv: Invoice, items: InvItem[], diamonds: DiamondItem[], cust
   }
 
   function itemDesc(it: InvItem): string {
+    if (!it.item_id && it.description_extra) return esc(it.description_extra)
     let d = esc(it.item_master?.name || 'Item')
     const parts: string[] = []
     if (it.item_master?.purity) parts.push(esc(it.item_master.purity))
@@ -165,15 +169,18 @@ function buildHtml(inv: Invoice, items: InvItem[], diamonds: DiamondItem[], cust
     return lines.join('<br>')
   }
 
-  const lineRows = items.map((it, i) => `
+  const lineRows = items.map((it, i) => {
+    const isSilver = !it.item_id && it.material_type !== 'gold_18k'
+    const isGold18k = !it.item_id && it.material_type === 'gold_18k'
+    return `
 <tr class="datarow">
   <td class="c">${i + 1}</td>
   <td><span class="b">${itemDesc(it)}</span></td>
-  <td class="c">${esc(it.item_master?.hsn_code || '')}</td>
+  <td class="c">${isSilver || isGold18k ? '—' : esc(it.item_master?.hsn_code || '')}</td>
   <td class="r" style="white-space: nowrap;">${fmtWt(it.weight)} gm</td>
-  <td class="r">&#8377;${fmt(it.rate_per_gram)}</td>
+  <td class="r">${isSilver ? '&#8377;' + fmt(it.rate_per_gram) : '&#8377;' + fmt(it.rate_per_gram)}</td>
   <td class="r b">&#8377;${fmt(it.price)}</td>
-</tr>`).join('\n')
+</tr>`}).join('\n')
 
   const diamondRows = diamonds.map((d, i) => `
 <tr class="datarow">
@@ -423,13 +430,17 @@ ${summaryRows}
 </body></html>`
 }
 
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'authorization, content-type, x-client-info, apikey, x-connection-protocol',
+function corsHeaders(req: Request) {
+  const origin = req.headers.get('Origin') || SUPABASE_URL
+  return {
+    'Access-Control-Allow-Origin': origin,
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'authorization, content-type, x-client-info, apikey, x-connection-protocol',
+  }
 }
 
 serve(async (req) => {
+  const CORS_HEADERS = corsHeaders(req)
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS_HEADERS })
 
   if (req.method !== 'POST') return new Response('Method not allowed', { status: 405, headers: CORS_HEADERS })
@@ -452,7 +463,7 @@ serve(async (req) => {
     const inv = invArr[0] as Invoice
 
     const [items, diamonds, custArr, adjArr] = await Promise.all([
-      fetchFrom<any[]>('/rest/v1/invoice_items?select=*,item_master!inner(name,hsn_code,purity)&invoice_id=eq.' + invoiceId + '&order=sno.asc'),
+      fetchFrom<any[]>('/rest/v1/invoice_items?select=*,item_master!left(name,hsn_code,purity)&invoice_id=eq.' + invoiceId + '&order=sno.asc'),
       fetchFrom<any[]>('/rest/v1/diamond_items?select=*&invoice_id=eq.' + invoiceId),
       inv.customer_id ? fetchFrom<any[]>('/rest/v1/customers?select=*&id=eq.' + inv.customer_id) : Promise.resolve([]),
       inv.adj_bill_id ? fetchFrom<any[]>('/rest/v1/inward_supply_vouchers?select=inv_no&id=eq.' + inv.adj_bill_id) : Promise.resolve([]),
@@ -471,7 +482,7 @@ serve(async (req) => {
     return new Response(html, {
       headers: { 'Content-Type': 'text/html; charset=utf-8', ...CORS_HEADERS },
     })
-  } catch (err: any) {
-    return new Response(err.message, { status: 500, headers: CORS_HEADERS })
+  } catch (_err: any) {
+    return new Response('Failed to generate invoice PDF', { status: 500, headers: CORS_HEADERS })
   }
 })

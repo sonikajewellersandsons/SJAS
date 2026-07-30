@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS item_master (
   hallmark_charge NUMERIC(10,2) NOT NULL DEFAULT 0,
   hsn_code        TEXT DEFAULT '71131913',
   active          BOOLEAN NOT NULL DEFAULT true,
+  material_type   TEXT,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -66,6 +67,12 @@ INSERT INTO item_master (name, purity, category, hallmark_charge, hsn_code, acti
   ('Gold', '22K', 'Metal', 0, '71131913', true),
   ('Silver', 'Silver', 'Metal', 0, '71131913', true)
 ON CONFLICT DO NOTHING;
+
+ALTER TABLE item_master ADD COLUMN IF NOT EXISTS material_type TEXT;
+
+INSERT INTO item_master (name, purity, category, hallmark_charge, hsn_code, active, material_type) VALUES
+  ('Gold Jewellery (18K)', '18K', 'Gold', 0, '71131913', true, 'gold_18k')
+ON CONFLICT (name) DO NOTHING;
 
 -- ─── CUSTOMERS ─────────────────────────────────────────
 
@@ -215,7 +222,9 @@ ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS huid_code TEXT DEFAULT '';
 ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS tax_pct NUMERIC(5,2) NOT NULL DEFAULT 3;
 ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS labour_rate NUMERIC(10,2) NOT NULL DEFAULT 0;
 ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS labour_pct NUMERIC(5,2) NOT NULL DEFAULT 10;
-
+ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS description_extra TEXT;
+ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS material_type TEXT;
+ALTER TABLE invoice_items ALTER COLUMN item_id DROP NOT NULL;
 ALTER TABLE invoices ADD COLUMN IF NOT EXISTS gold_rate NUMERIC(10,2) NOT NULL DEFAULT 0;
 ALTER TABLE invoices ADD COLUMN IF NOT EXISTS round_off NUMERIC(10,2) NOT NULL DEFAULT 0;
 
@@ -331,7 +340,7 @@ $$;
 -- Generate next invoice number for a given type (sale/inward)
 DROP FUNCTION IF EXISTS next_inv_no(text);
 CREATE OR REPLACE FUNCTION next_inv_no(p_type inv_sequence_type)
-RETURNS TEXT LANGUAGE plpgsql AS $$
+RETURNS TEXT LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE
   v_fy TEXT;
   v_seq INTEGER;
@@ -433,7 +442,12 @@ BEGIN
   SELECT inv_no INTO v_inv_no FROM invoices WHERE id = p_invoice_id;
   IF v_inv_no IS NULL THEN RAISE EXCEPTION 'Invoice not found: %', p_invoice_id; END IF;
 
-  FOR r IN SELECT item_id, weight, huid FROM invoice_items WHERE invoice_id = p_invoice_id
+  FOR r IN SELECT ii.item_id, ii.weight, ii.huid
+  FROM invoice_items ii
+  LEFT JOIN item_master im ON im.id = ii.item_id
+  WHERE ii.invoice_id = p_invoice_id
+    AND ii.item_id IS NOT NULL
+    AND (im.material_type IS DISTINCT FROM 'gold_18k')
   LOOP
     -- Skip if stock_ledger already has an OUT entry for this exact item+weight+huid (idempotent)
     IF EXISTS (SELECT 1 FROM stock_ledger WHERE source_type = 'sale' AND reference_id = p_invoice_id AND item_id = r.item_id AND weight = r.weight AND huid IS NOT DISTINCT FROM r.huid) THEN
@@ -461,6 +475,8 @@ BEGIN
     (SELECT date FROM invoices WHERE id = p_invoice_id),
     'Invoice ' || v_inv_no, huid
   FROM invoice_items WHERE invoice_id = p_invoice_id
+    AND item_id IS NOT NULL
+    AND item_id NOT IN (SELECT id FROM item_master WHERE material_type = 'gold_18k')
     AND NOT EXISTS (
       SELECT 1 FROM stock_ledger
       WHERE source_type = 'sale' AND reference_id = p_invoice_id AND item_id = invoice_items.item_id AND weight = invoice_items.weight AND huid IS NOT DISTINCT FROM invoice_items.huid
@@ -477,7 +493,12 @@ DECLARE
 BEGIN
   SELECT inv_no INTO v_inv_no FROM invoices WHERE id = p_invoice_id;
 
-  FOR r IN SELECT item_id, weight, huid FROM invoice_items WHERE invoice_id = p_invoice_id
+  FOR r IN SELECT ii.item_id, ii.weight, ii.huid
+  FROM invoice_items ii
+  LEFT JOIN item_master im ON im.id = ii.item_id
+  WHERE ii.invoice_id = p_invoice_id
+    AND ii.item_id IS NOT NULL
+    AND (im.material_type IS DISTINCT FROM 'gold_18k')
   LOOP
     UPDATE purchases
     SET sold_pcs = GREATEST(sold_pcs - 1, 0),
@@ -610,6 +631,159 @@ DROP TRIGGER IF EXISTS trg_inward_to_stock ON inward_supply_vouchers;
 DROP FUNCTION IF EXISTS trg_mark_purchase_sold();
 DROP FUNCTION IF EXISTS trg_inward_to_stock();
 
+-- ─── MATERIAL PURCHASES (18K Gold / Silver weight-only) ──
+
+CREATE TABLE IF NOT EXISTS material_purchases (
+  id          BIGSERIAL PRIMARY KEY,
+  type        TEXT NOT NULL,
+  date        DATE NOT NULL DEFAULT CURRENT_DATE,
+  supplier    TEXT NOT NULL,
+  weight      NUMERIC(12,3) NOT NULL,
+  notes       TEXT,
+  sold_weight NUMERIC(12,3) NOT NULL DEFAULT 0,
+  created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE material_purchases DROP COLUMN IF EXISTS rate;
+ALTER TABLE material_purchases DROP COLUMN IF EXISTS amount;
+ALTER TABLE material_purchases DROP CONSTRAINT IF EXISTS material_purchases_type_check;
+ALTER TABLE material_purchases ADD CONSTRAINT material_purchases_type_check CHECK (type IN ('gold_18k', 'silver_925', 'silver_ornaments'));
+
+CREATE INDEX IF NOT EXISTS idx_material_purchases_type ON material_purchases(type);
+
+-- ─── MATERIAL SALES (18K Gold / Silver sold on invoices) ─
+
+CREATE TABLE IF NOT EXISTS material_sales (
+  id          BIGSERIAL PRIMARY KEY,
+  type        TEXT NOT NULL,
+  invoice_id  BIGINT REFERENCES invoices(id) ON DELETE CASCADE,
+  invoice_no  TEXT,
+  description TEXT,
+  weight      NUMERIC(12,3) NOT NULL,
+  rate        NUMERIC(10,2),
+  amount      NUMERIC(12,2) NOT NULL,
+  created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE material_sales DROP CONSTRAINT IF EXISTS material_sales_type_check;
+ALTER TABLE material_sales ADD CONSTRAINT material_sales_type_check CHECK (type IN ('gold_18k', 'silver_925', 'silver_ornaments'));
+
+CREATE INDEX IF NOT EXISTS idx_material_sales_type ON material_sales(type);
+CREATE INDEX IF NOT EXISTS idx_material_sales_invoice ON material_sales(invoice_id);
+
+-- ─── RPC: PROCESS MATERIAL SALE ──────────────────────────
+
+DROP FUNCTION IF EXISTS process_material_sale(bigint);
+CREATE OR REPLACE FUNCTION process_material_sale(p_invoice_id BIGINT)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_inv_no TEXT;
+  v_avail NUMERIC;
+  v_selling NUMERIC;
+BEGIN
+  SELECT inv_no INTO v_inv_no FROM invoices WHERE id = p_invoice_id;
+
+  -- === Validate stock availability ===
+
+  -- 18K Gold (both item_id-linked and item_id=null buttons)
+  SELECT COALESCE(SUM(weight - sold_weight), 0) INTO v_avail FROM material_purchases WHERE type = 'gold_18k';
+  SELECT COALESCE(SUM(ii.weight), 0) INTO v_selling
+  FROM invoice_items ii
+  LEFT JOIN item_master im ON im.id = ii.item_id
+  WHERE ii.invoice_id = p_invoice_id AND (im.material_type = 'gold_18k' OR ii.material_type = 'gold_18k');
+  IF v_selling > v_avail THEN
+    RAISE EXCEPTION 'Insufficient 18K Gold stock: selling %s g but only %s g available', v_selling, v_avail;
+  END IF;
+
+  -- Silver 925
+  SELECT COALESCE(SUM(weight - sold_weight), 0) INTO v_avail FROM material_purchases WHERE type = 'silver_925';
+  SELECT COALESCE(SUM(weight), 0) INTO v_selling FROM invoice_items WHERE invoice_id = p_invoice_id AND material_type = 'silver_925';
+  IF v_selling > v_avail THEN
+    RAISE EXCEPTION 'Insufficient Silver 925 stock: selling %s g but only %s g available', v_selling, v_avail;
+  END IF;
+
+  -- Silver Ornaments
+  SELECT COALESCE(SUM(weight - sold_weight), 0) INTO v_avail FROM material_purchases WHERE type = 'silver_ornaments';
+  SELECT COALESCE(SUM(weight), 0) INTO v_selling FROM invoice_items WHERE invoice_id = p_invoice_id AND material_type = 'silver_ornaments';
+  IF v_selling > v_avail THEN
+    RAISE EXCEPTION 'Insufficient Silver Ornaments stock: selling %s g but only %s g available', v_selling, v_avail;
+  END IF;
+
+  -- === Process 18K Gold ===
+
+  INSERT INTO material_sales (type, invoice_id, invoice_no, description, weight, rate, amount)
+  SELECT 'gold_18k', p_invoice_id, v_inv_no, im.name, ii.weight, ii.rate_per_gram, ii.price
+  FROM invoice_items ii
+  JOIN item_master im ON im.id = ii.item_id
+  WHERE ii.invoice_id = p_invoice_id AND im.material_type = 'gold_18k';
+
+  UPDATE material_purchases mp
+  SET sold_weight = sold_weight + sub.total_weight
+  FROM (
+    SELECT COALESCE(SUM(ii.weight), 0) as total_weight
+    FROM invoice_items ii
+    LEFT JOIN item_master im ON im.id = ii.item_id
+    WHERE ii.invoice_id = p_invoice_id AND (im.material_type = 'gold_18k' OR ii.material_type = 'gold_18k')
+  ) sub
+  WHERE mp.type = 'gold_18k';
+
+  -- === Process Silver items ===
+
+  INSERT INTO material_sales (type, invoice_id, invoice_no, description, weight, rate, amount)
+  SELECT ii.material_type, p_invoice_id, v_inv_no, ii.description_extra, ii.weight, ii.rate_per_gram, ii.price
+  FROM invoice_items ii
+  WHERE ii.invoice_id = p_invoice_id AND ii.item_id IS NULL AND ii.material_type IS NOT NULL;
+
+  UPDATE material_purchases mp
+  SET sold_weight = sold_weight + sub.total_weight
+  FROM (
+    SELECT COALESCE(SUM(weight), 0) as total_weight FROM invoice_items
+    WHERE invoice_id = p_invoice_id AND material_type = 'silver_925'
+  ) sub
+  WHERE mp.type = 'silver_925';
+
+  UPDATE material_purchases mp
+  SET sold_weight = sold_weight + sub.total_weight
+  FROM (
+    SELECT COALESCE(SUM(weight), 0) as total_weight FROM invoice_items
+    WHERE invoice_id = p_invoice_id AND material_type = 'silver_ornaments'
+  ) sub
+  WHERE mp.type = 'silver_ornaments';
+END;
+$$;
+
+-- ─── RPC: REVERSE MATERIAL SALE ──────────────────────────
+
+DROP FUNCTION IF EXISTS reverse_material_sale(bigint);
+CREATE OR REPLACE FUNCTION reverse_material_sale(p_invoice_id BIGINT)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  -- Reverse sold_weight for 18K items
+  UPDATE material_purchases mp
+  SET sold_weight = GREATEST(0, sold_weight - sub.weight)
+  FROM (
+    SELECT COALESCE(SUM(weight), 0) as weight
+    FROM material_sales
+    WHERE invoice_id = p_invoice_id AND type = 'gold_18k'
+  ) sub
+  WHERE mp.type = 'gold_18k';
+
+  -- Reverse sold_weight for silver items
+  UPDATE material_purchases mp
+  SET sold_weight = GREATEST(0, sold_weight - sub.weight)
+  FROM (
+    SELECT type, COALESCE(SUM(weight), 0) as weight
+    FROM material_sales
+    WHERE invoice_id = p_invoice_id AND type IN ('silver_925', 'silver_ornaments')
+    GROUP BY type
+  ) sub
+  WHERE mp.type = sub.type;
+
+  -- Delete material_sales for this invoice
+  DELETE FROM material_sales WHERE invoice_id = p_invoice_id;
+END;
+$$;
+
 -- ─── RLS POLICIES ──────────────────────────────────────
 
 -- Helper: check if user has permission
@@ -640,6 +814,8 @@ ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE role_masters ENABLE ROW LEVEL SECURITY;
 ALTER TABLE settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE material_purchases ENABLE ROW LEVEL SECURITY;
+ALTER TABLE material_sales ENABLE ROW LEVEL SECURITY;
 
 -- Drop all existing policies first (for idempotent re-runs)
 DO $$ BEGIN
@@ -835,3 +1011,35 @@ CREATE POLICY logs_read ON logs FOR SELECT USING (
   has_permission('allow_settings')
 );
 CREATE POLICY logs_write ON logs FOR INSERT WITH CHECK (true);
+
+-- Material purchases: read by billing/reports, write/update by billing
+DROP POLICY IF EXISTS material_purchases_read ON material_purchases;
+CREATE POLICY material_purchases_read ON material_purchases FOR SELECT USING (
+  has_permission('allow_billing') OR has_permission('allow_reports')
+);
+DROP POLICY IF EXISTS material_purchases_write ON material_purchases;
+CREATE POLICY material_purchases_write ON material_purchases FOR INSERT WITH CHECK (
+  has_permission('allow_billing') OR has_permission('allow_stock_edit')
+);
+DROP POLICY IF EXISTS material_purchases_update ON material_purchases;
+CREATE POLICY material_purchases_update ON material_purchases FOR UPDATE USING (
+  has_permission('allow_billing') OR has_permission('allow_stock_edit')
+);
+DROP POLICY IF EXISTS material_purchases_delete ON material_purchases;
+CREATE POLICY material_purchases_delete ON material_purchases FOR DELETE USING (
+  has_permission('allow_billing') OR has_permission('allow_stock_edit')
+);
+
+-- Material sales: read by billing/reports, write/delete by billing
+DROP POLICY IF EXISTS material_sales_read ON material_sales;
+CREATE POLICY material_sales_read ON material_sales FOR SELECT USING (
+  has_permission('allow_billing') OR has_permission('allow_reports')
+);
+DROP POLICY IF EXISTS material_sales_write ON material_sales;
+CREATE POLICY material_sales_write ON material_sales FOR INSERT WITH CHECK (
+  has_permission('allow_billing')
+);
+DROP POLICY IF EXISTS material_sales_delete ON material_sales;
+CREATE POLICY material_sales_delete ON material_sales FOR DELETE USING (
+  has_permission('allow_billing')
+);

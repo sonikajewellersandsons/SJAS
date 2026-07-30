@@ -56,7 +56,7 @@ export default function ReportsPage() {
 
 /* ─── HOOK: Monthly Sales Data ─────────────────────── */
 
-function useMonthlyData(year) {
+function useMonthlyData(year, addToast) {
   const [months, setMonths] = useState([])
   const [loading, setLoading] = useState(true)
   const fyStart = `${year}-04-01`
@@ -106,7 +106,8 @@ function useMonthlyData(year) {
 /* ─── OVERVIEW TAB ─────────────────────────────────── */
 
 function SalesOverview({ year, addToast }) {
-  const { months, loading } = useMonthlyData(year)
+  const { months, loading } = useMonthlyData(year, addToast)
+
   const [selectedMonth, setSelectedMonth] = useState(null)
 
   const totalSales = months.reduce((s, m) => s + m.sales, 0)
@@ -269,7 +270,7 @@ function MonthDrillDown({ month, onClose, addToast }) {
 /* ─── TAX REPORT TAB ───────────────────────────────── */
 
 function TaxReport({ year, addToast }) {
-  const { months, loading } = useMonthlyData(year)
+  const { months, loading } = useMonthlyData(year, addToast)
 
   const totalTax = months.reduce((s, m) => s + m.tax, 0)
   const totalTaxable = months.reduce((s, m) => s + m.taxable, 0)

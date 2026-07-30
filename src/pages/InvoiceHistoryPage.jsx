@@ -30,6 +30,8 @@ export default function InvoiceHistoryPage() {
   const [itemsLoading, setItemsLoading] = useState(false)
   const [exportView, setExportView] = useState(false)
   const [printLoading, setPrintLoading] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(null)
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => { loadInvoices() }, [])
 
@@ -46,21 +48,32 @@ export default function InvoiceHistoryPage() {
     setSelectedInvoice(inv)
     setItemsLoading(true)
     setShowModal(true)
-    const { data, error } = await supabase.from('invoice_items').select('*, item_master!inner(name, hsn_code)').eq('invoice_id', inv.id).order('sno')
+    const { data, error } = await supabase.from('invoice_items').select('*, item_master!left(name, hsn_code)').eq('invoice_id', inv.id).order('sno')
     if (data) setLineItems(data)
     if (error) addToast('Failed to load line items', 'error')
     setItemsLoading(false)
   }
 
   async function deleteInvoice(id, invNo) {
-    if (!window.confirm(`Delete invoice "${invNo}"? This cannot be undone.`)) return
-    const { error } = await supabase.rpc('delete_invoice', { p_invoice_id: id })
+    setConfirmDelete({ id, invNo })
+  }
+
+  async function handleConfirmDelete() {
+    if (!confirmDelete) return
+    setDeleting(true)
+    const { error } = await supabase.rpc('delete_invoice', { p_invoice_id: confirmDelete.id })
+    setDeleting(false)
+    setConfirmDelete(null)
     if (error) {
       addToast(error.message, 'error')
       return
     }
-    addToast(`Invoice ${invNo} deleted`, 'success')
+    addToast(`Invoice ${confirmDelete.invNo} deleted`, 'success')
     loadInvoices()
+  }
+
+  function handleCancelDelete() {
+    setConfirmDelete(null)
   }
 
   function editInvoice(inv) {
@@ -263,6 +276,26 @@ export default function InvoiceHistoryPage() {
           <div className="modal-card" style={{ maxWidth: '300px', textAlign: 'center', padding: '2rem' }}>
             <div className="spinner" style={{ margin: '0 auto 1rem' }} />
             <p className="text-sm" style={{ fontWeight: 700 }}>Generating invoice…</p>
+          </div>
+        </div>
+      )}
+
+      {confirmDelete && (
+        <div className="modal-overlay" onClick={handleCancelDelete}>
+          <div className="modal-card" style={{ maxWidth: '400px' }} onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 className="modal-title">Delete Invoice</h3>
+              <button className="modal-close" onClick={handleCancelDelete}>&times;</button>
+            </div>
+            <p style={{ marginBottom: '1.5rem', lineHeight: 1.6 }}>
+              Delete invoice <strong>{confirmDelete.invNo}</strong>? This cannot be undone.
+            </p>
+            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
+              <button className="btn btn-outline" onClick={handleCancelDelete} disabled={deleting}>Cancel</button>
+              <button className="btn btn-danger" onClick={handleConfirmDelete} disabled={deleting}>
+                {deleting ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
           </div>
         </div>
       )}

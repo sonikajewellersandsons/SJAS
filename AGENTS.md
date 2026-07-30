@@ -20,10 +20,12 @@ Invoice, stock, and customer management app for a small jewellery shop. Used on 
 | `src/pages/DashboardPage.jsx` | Dashboard stats |
 | `src/pages/StockPage.jsx` | Stock management (ItemMaster, StockView, Purchase tabs) |
 | `src/pages/CustomersPage.jsx` | Customer CRUD + purchase history |
-| `src/pages/BillingPage.jsx` | Invoice creation with customer search, editable invoice no, gold rate with ₹+commas, inward supply voucher adj selector |
+| `src/pages/BillingPage.jsx` | Invoice creation with customer search, editable invoice no, gold rate with ₹+commas, inward supply voucher adj selector, silver type dropdown with stock check |
 | `src/pages/InwardSupplyPage.jsx` | Exchange/trade-in vouchers: valuation, multi-item entry, not stock |
 | `src/pages/InvoiceHistoryPage.jsx` | Past invoices, receipt view, print, export, last-only delete |
-| `src/pages/SalesPage.jsx` | Sold items view with purity, clickable receipt modal |
+| `src/pages/SalesPage.jsx` | Sold items view with purity, materials tab, clickable receipt modal |
+| `src/pages/MaterialPage.jsx` | 18K Gold & Silver purchase, stock card, sale history |
+| `src/pages/MaterialPage.jsx` | 18K Gold & Silver purchase, stock card, sale history |
 | `src/pages/ReportsPage.jsx` | Sales, Purchase, GST, Stock valuation reports |
 | `src/pages/SettingsPage.jsx` | User/role management, master data |
 | `src/pages/ProfilePage.jsx` | User profile |
@@ -42,8 +44,10 @@ Invoice, stock, and customer management app for a small jewellery shop. Used on 
 | `purchases` | Purchase from suppliers (has `sold_pcs`, `sold_inv_no` for multi-piece tracking) |
 | `inward_supply_vouchers` | Adjustment bills (inv_no format: `SJS/IWS/{fy}/{seq}`) |
 | `invoices` | Sale invoice header (inv_no format: `SJS/{fy}/{seq}`, customer, totals, disc, round_off, gold_rate, adj bill linkage) |
-| `invoice_items` | Sale line items (item_id, weight, rate, price, tax, hallmark, sno, huid, huid_code) |
+| `invoice_items` | Sale line items (item_id, weight, rate, price, tax, hallmark, sno, huid, huid_code, description_extra, material_type) |
 | `diamond_items` | Diamond line items on invoices |
+| `material_purchases` | 18K Gold / Silver 925 / Silver Ornaments weight-only purchase lots (sold_weight tracking) |
+| `material_sales` | 18K Gold / Silver 925 / Silver Ornaments sales linked to invoices |
 | `inv_sequences` | Financial year sequence tracker (type: sale/inward, fy, last_no) |
 | `users` | App users (auth_id FK, role, name, email, permissions, is_active) |
 | `role_masters` | Role definitions with JSONB permissions |
@@ -99,6 +103,10 @@ Permissions stored as JSONB in `role_masters.permissions`.
 | `get_stock_balance(p_item_id)` | Returns current stock (weight, pcs) for an item |
 | `get_stock_lots()` | Returns all purchase lots with available pcs, status, comma-separated sale invoice refs |
 | `next_inv_no(p_type)` | Returns next full invoice number (`SJS/2026-27/001`) — atomic INSERT ... ON CONFLICT DO UPDATE |
+| `process_material_sale(p_invoice_id)` | Creates material_sales rows, decrements material_purchases.sold_weight for 18K/Silver |
+| `reverse_material_sale(p_invoice_id)` | Reverses material_sales and restores sold_weight |
+| `process_material_sale(p_invoice_id)` | Creates material_sales rows, decrements material_purchases.sold_weight for 18K/Silver |
+| `reverse_material_sale(p_invoice_id)` | Reverses material_sales and restores sold_weight |
 
 ## Deployment
 1. Run `sql/schema.sql` in Supabase SQL Editor (idempotent)
@@ -152,8 +160,6 @@ All items from the original audit have been verified and fixed:
 - **BillingPage loadData error handling** — Added try/catch to prevent infinite spinner on query failure.
 
 ### Remaining Incomplete Modules
-- **SettingsPage.jsx** — Built: 4 tabs (Shop Details, Bank Details, Users, Roles)
-- **ReportsPage.jsx** — Built: 5 tabs (Sales Overview with chart, Tax Report with CGST/SGST/IGST split, HSN Summary, GSTR-1 Customer report, Payments & Category)
 - **Diamond Items** — DB table `diamond_items` exists but BillingPage has no UI for diamond line items.
 - **`create-auth-user` Edge Function** — Stub: returns "coming soon"
 
@@ -164,3 +170,63 @@ All items from the original audit have been verified and fixed:
 - **SalesPage.jsx:56** — Date filter silently passed items when `inv.date` was undefined. Fixed: returns `false` when date filter active but date missing.
 - **InvoiceHistoryPage.jsx:100** — Double `requestAnimationFrame` may not wait for SVG images. Fixed: uses `setTimeout(300)` instead.
 - **Customer GSTIN** — DB column existed but forms didn't collect it. Fixed: added GSTIN field to CustomersPage form (edit + create) and BillingPage new-customer form. Uppercased on input.
+
+---
+
+## Current Work Session (August 2026 — 18K Gold & Silver Modules)
+
+### Objective
+Add 18K Gold (weight-only stock) and Silver (Quick Silver line items) modules — purchase/sale/stock management, billing integration.
+
+### Completed
+- **DB schema**: `material_purchases`, `material_sales` tables; `item_master.material_type` column; seed 18K Gold items; `invoice_items.material_type` column
+- **RPCs**: `process_material_sale()` + `reverse_material_sale()`; `process_invoice_stock()`/`reverse_invoice_stock()` skip 18K and silver items; RLS policies for new tables
+- **BillingPage**: "Add Silver" button with type dropdown (Silver 925 / Silver Ornaments), description/weight/rate input; stock check against `material_purchases` available weight; silver items save as `invoice_items` with `item_id=NULL`, `description_extra`, `material_type`; `process_material_sale` called after `process_invoice_stock`; `reverse_material_sale` on edit; error recovery
+- **18K billing**: "Gold Jewellery (18K)" single item in dropdown; rate auto-calculated as `goldRate × 18/22`; labour % editable
+- **MaterialPage.jsx**: New page at `/materials` with 3 tabs (18K Gold / Silver 925 / Silver Ornaments); purchase form (date, supplier, weight, notes); stock card (total/sold/available); purchase & sale history tables
+- **SalesPage**: "Materials" tab showing `material_sales` rows with type badge (18K/925/Ornaments)
+- **App.jsx**: `/materials` route + nav item (Layers icon)
+- **CSS**: `.badge-silver` class added to `index.css`
+- **Silver stock split**: `material_purchases.type` and `material_sales.type` now use `'silver_925'` and `'silver_ornaments'` instead of generic `'silver'`
+
+### Fixed (August 2026 — continued)
+- **`process_material_sale`** now validates available stock per type (gold_18k, silver_925, silver_ornaments) with `RAISE EXCEPTION` if insufficient — safety net beyond frontend validation.
+- **MaterialPage** purchase history now has Edit/Delete buttons (disabled for lots with sold_weight > 0); form supports both insert and update.
+- **`process_material_sale` UPDATE subqueries** fixed: changed from `SELECT id, weight` (multi-row, picked arbitrary row) to `SELECT COALESCE(SUM(weight), 0)` — single aggregate row.
+- **Missing DELETE RLS on `material_purchases`** — added policy; also enabled RLS on `material_purchases` and `material_sales` (policies existed but RLS was not enabled).
+- **`next_inv_no` missing SECURITY DEFINER** — added `SECURITY DEFINER` to the function.
+- **`useMonthlyData` addToast scope** — `addToast` not defined in hook; now accepts it as parameter from both callers.
+- **BillingPage phone save** — was saving raw `newCust.phone.trim()` including `+91` prefix; now saves cleaned `cleanedPhone`.
+- **5 query locations using `item_master!inner`** — changed to `!left` to prevent silver items being silently excluded: SalesPage, InvoiceHistoryPage, StockPage, BillingPage, PDF edge function.
+- **InvoiceModal Haryana hardcode** — now fetches `shop_state` from settings dynamically.
+- **InvoiceModal silver display** — shows `description_extra`, hides labour breakdown for silver items.
+- **PDF generation silver support** — updated `InvItem` interface, `itemDesc()`, line rows, query.
+- **`window.confirm()` replaced** on StockPage, InwardSupplyPage, CustomersPage, InvoiceHistoryPage — all now use themed modals.
+- **Delete button loading states** — added `deleting` state + disabled button + "Deleting..." text on StockPage, InwardSupplyPage, CustomersPage, InvoiceHistoryPage, MaterialPage.
+- **Edge Function CORS** — dynamic origin from request headers instead of wildcard `*`.
+- **Edge Function error leak** — 500 response now returns generic message instead of `err.message`.
+- **Edge Function env validation** — startup check with explicit error for missing env vars.
+- **SalesPage print button** — replaced "coming soon" stub with `window.print()`.
+- **Created `vercel.json`** — SPA fallback rewrites, security headers.
+- **Created `.github/workflows/deploy.yml`** — CI/CD build on push/PR.
+- **Route-level error boundaries** — each route in App.jsx wrapped with `RouteErrorBoundary`.
+
+### Pending / Not Yet Built
+- (none currently tracked)
+
+### Completed (August 2026 — Price Calculator)
+- **Price Calculator page** (`/price-calculator`): live RCPL gold rates fetched from rohtakchain.com via Supabase Edge Function, auto-refreshes every 5 min, 3 top cards (RCPL Gold 999, 22K, 18K), all-rates table, gold price calculator with purity selector
+- **Edge Function** (`fetch-rcpl-rate`): fetches HTML from rohtakchain.com/live-rates, parses all `.live-rate-row` blocks into structured data, returns JSON with CORS headers, errors returned gracefully as 200 with error field
+- **BillingPage Gold 18K button**: "Add Gold 18K" button adjacent to "Add Silver" with standalone line items (item_id=null, material_type='gold_18k'), stock check against material_purchases, labour % editable, rate = goldRate/10 × 18/22, DB function updated to handle item_id=null gold_18k items
+
+### Relevant Files
+- `sql/schema.sql`: `material_purchases`, `material_sales`, `process_material_sale`, `reverse_material_sale`, `item_master.material_type`, seed 18K items, RLS policies
+- `src/pages/BillingPage.jsx`: `addSilverLine`, `addGold18kLine`, silver/gold 18K standalone line items, stock check, save/edit/render
+- `src/pages/MaterialPage.jsx`: purchase form, stock card, purchase/sale history (3 tabs)
+- `src/pages/PriceCalculatorPage.jsx`: RCPL live rates, gold calculator, auto-refresh
+- `supabase/functions/fetch-rcpl-rate/index.ts`: Edge Function to fetch/parse rohtakchain.com live rates
+- `src/pages/SalesPage.jsx`: Materials tab with material_sales table
+- `src/App.jsx`: `/materials`, `/price-calculator` routes + sidebar nav items
+- `src/index.css`: `.badge-silver`
+- `src/components/InvoiceModal.jsx`: gold_18k support in receipt modal
+- `supabase/functions/generate-invoice-pdf/index.ts`: silver + gold_18k support in PDF generation

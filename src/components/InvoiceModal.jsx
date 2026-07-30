@@ -1,3 +1,5 @@
+import { useState, useEffect } from 'react'
+import { supabase } from '../lib/supabase'
 import { Printer, X } from 'lucide-react'
 
 function fmt(n) {
@@ -9,12 +11,20 @@ function num(n) {
 }
 
 export default function InvoiceModal({ show, invoice, lineItems, loading, onClose, onPrint, printLabel }) {
+  const [shopState, setShopState] = useState('haryana')
+
+  useEffect(() => {
+    supabase.from('settings').select('value').eq('key', 'shop_state').maybeSingle().then(({ data }) => {
+      if (data?.value) setShopState(JSON.parse(data.value).toLowerCase())
+    }).catch(() => {})
+  }, [])
+
   if (!show || !invoice || lineItems.length === 0) return null
 
   const goodsTax = lineItems.reduce((s, i) => s + Number(i.tax_amount), 0)
   const hallmarkTax = Number(invoice.tax_total) - goodsTax
   const totalHc = lineItems.reduce((s, i) => s + Number(i.hallmark_charge), 0)
-  const isIntraState = (invoice.customer_state || '').toLowerCase() === 'haryana'
+  const isIntraState = (invoice.customer_state || '').toLowerCase() === shopState
 
   return (
     <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
@@ -82,19 +92,24 @@ export default function InvoiceModal({ show, invoice, lineItems, loading, onClos
                     const goldRate = parseFloat(invoice.gold_rate) || 0
                     const goldPerGm = goldRate / 10
                     return lineItems.map(item => {
+                      const isSilver = !item.item_id && item.material_type !== 'gold_18k'
+                      const isGold18k = !item.item_id && item.material_type === 'gold_18k'
                       const rate = parseFloat(item.rate_per_gram) || 0
-                      const labour = goldPerGm > 0 ? Math.max(0, rate - goldPerGm) : 0
+                      const labour = goldPerGm > 0 && !isGold18k ? Math.max(0, rate - goldPerGm) : 0
                       return (
                         <tr key={item.id}>
                           <td className="text-xs text-secondary">{item.sno}</td>
-                          <td style={{ fontWeight: 600, fontSize: '0.75rem' }}>{item.item_master?.name || `Item #${item.item_id}`}</td>
-                          <td className="font-mono text-xs">{item.item_master?.hsn_code || '—'}</td>
+                          <td style={{ fontWeight: 600, fontSize: '0.75rem' }}>{isSilver ? (item.description_extra || 'Quick Silver') : (item.item_master?.name || item.description_extra || `Item #${item.item_id}`)}</td>
+                          <td className="font-mono text-xs">{isSilver || isGold18k ? '—' : (item.item_master?.hsn_code || '—')}</td>
                           <td className="font-mono text-xs">{Number(item.weight).toFixed(3)}</td>
                           <td className="font-mono text-xs" style={{ lineHeight: 1.4 }}>
                             <div>₹{num(rate)}</div>
-                            {goldPerGm > 0 && (
+                            {!isSilver && goldPerGm > 0 && (
                               <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
-                                (₹{num(goldPerGm)} + ₹{num(labour)})
+                                {isGold18k
+                                  ? `(18K ₹${num(goldPerGm * 18 / 22)} + L ${item.labour_pct || 10}%)`
+                                  : `(₹${num(goldPerGm)} + ₹${num(labour)})`
+                                }
                               </div>
                             )}
                           </td>

@@ -12,7 +12,10 @@ import SettingsPage from './pages/SettingsPage'
 import ProfilePage from './pages/ProfilePage'
 import SalesPage from './pages/SalesPage'
 import InwardSupplyPage from './pages/InwardSupplyPage'
-import { LayoutDashboard, Package, Users, FileText, Receipt, BarChart3, Settings, User, LogOut, Gem, ShoppingBag, RotateCcw } from 'lucide-react'
+import MaterialPage from './pages/MaterialPage'
+import PriceCalculatorPage from './pages/PriceCalculatorPage'
+import RouteErrorBoundary from './components/RouteErrorBoundary'
+import { LayoutDashboard, Package, Users, FileText, Receipt, BarChart3, Settings, User, LogOut, Gem, ShoppingBag, RotateCcw, Layers, Calculator } from 'lucide-react'
 
 function AppLayout() {
   const { profile, loading, hasPermission, signOut } = useAuth()
@@ -30,11 +33,13 @@ function AppLayout() {
 
   const navItems = [
     { path: '/', label: 'Dashboard', icon: LayoutDashboard, permission: 'allow_reports' },
+    { path: '/price-calculator', label: 'Price Calculator', icon: Calculator },
     { path: '/stock', label: 'Stock', icon: Package, permission: 'allow_stock_view' },
     { path: '/customers', label: 'Customers', icon: Users, permission: 'allow_customers' },
     { path: '/billing', label: 'Billing', icon: FileText, permission: 'allow_billing' },
     { path: '/invoices', label: 'Invoices', icon: Receipt, permission: 'allow_billing' },
     { path: '/inward-supply', label: 'Inward Supply', icon: RotateCcw, permission: 'allow_billing' },
+    { path: '/materials', label: 'Materials', icon: Layers, permission: 'allow_stock_view' },
     { path: '/sales', label: 'Sales', icon: ShoppingBag, permission: 'allow_reports' },
     { path: '/reports', label: 'Reports', icon: BarChart3, permission: 'allow_reports' },
   ]
@@ -112,16 +117,18 @@ function isActive(path) {
       {/* Main content */}
       <main className="main-content">
         <Routes>
-          <Route path="/" element={hasPermission('allow_reports') ? <DashboardPage /> : <Navigate to="/profile" replace />} />
-          <Route path="/stock" element={hasPermission('allow_stock_view') ? <StockPage /> : <Navigate to="/" replace />} />
-          <Route path="/customers" element={hasPermission('allow_customers') ? <CustomersPage /> : <Navigate to="/" replace />} />
-          <Route path="/billing" element={hasPermission('allow_billing') ? <BillingPage /> : <Navigate to="/" replace />} />
-          <Route path="/invoices" element={hasPermission('allow_billing') ? <InvoiceHistoryPage /> : <Navigate to="/" replace />} />
-          <Route path="/inward-supply" element={hasPermission('allow_billing') ? <InwardSupplyPage /> : <Navigate to="/" replace />} />
-          <Route path="/sales" element={hasPermission('allow_reports') ? <SalesPage /> : <Navigate to="/" replace />} />
-          <Route path="/reports" element={hasPermission('allow_reports') ? <ReportsPage /> : <Navigate to="/" replace />} />
-          <Route path="/settings" element={hasPermission('allow_settings') ? <SettingsPage /> : <Navigate to="/" replace />} />
-          <Route path="/profile" element={<ProfilePage />} />
+          <Route path="/" element={<RouteErrorBoundary>{hasPermission('allow_reports') ? <DashboardPage /> : <Navigate to="/profile" replace />}</RouteErrorBoundary>} />
+          <Route path="/price-calculator" element={<RouteErrorBoundary><PriceCalculatorPage /></RouteErrorBoundary>} />
+          <Route path="/stock" element={<RouteErrorBoundary>{hasPermission('allow_stock_view') ? <StockPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
+          <Route path="/customers" element={<RouteErrorBoundary>{hasPermission('allow_customers') ? <CustomersPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
+          <Route path="/billing" element={<RouteErrorBoundary>{hasPermission('allow_billing') ? <BillingPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
+          <Route path="/invoices" element={<RouteErrorBoundary>{hasPermission('allow_billing') ? <InvoiceHistoryPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
+          <Route path="/inward-supply" element={<RouteErrorBoundary>{hasPermission('allow_billing') ? <InwardSupplyPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
+          <Route path="/materials" element={<RouteErrorBoundary>{hasPermission('allow_stock_view') ? <MaterialPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
+          <Route path="/sales" element={<RouteErrorBoundary>{hasPermission('allow_reports') ? <SalesPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
+          <Route path="/reports" element={<RouteErrorBoundary>{hasPermission('allow_reports') ? <ReportsPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
+          <Route path="/settings" element={<RouteErrorBoundary>{hasPermission('allow_settings') ? <SettingsPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
+          <Route path="/profile" element={<RouteErrorBoundary><ProfilePage /></RouteErrorBoundary>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

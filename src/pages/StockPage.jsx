@@ -65,6 +65,8 @@ function ItemMasterTab() {
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState({ name: '', purity: '22K', category: 'Gold', hallmark_charge: '', hsn_code: '71131913', active: true })
   const [subTab, setSubTab] = useState('jewellery')
+  const [confirmDelete, setConfirmDelete] = useState(null)
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => { loadItems() }, [])
 
@@ -99,14 +101,22 @@ function ItemMasterTab() {
     setShowForm(true)
   }
 
-  async function deleteItem(id, name) {
-    if (!window.confirm(`Delete item "${name}"? This cannot be undone.`)) return
-    const { error } = await supabase.from('item_master').delete().eq('id', id)
+  function deleteItem(id) {
+    setConfirmDelete(id)
+  }
+
+  async function handleDeleteConfirm() {
+    if (!confirmDelete) return
+    setDeleting(true)
+    const { error } = await supabase.from('item_master').delete().eq('id', confirmDelete)
+    setDeleting(false)
     if (error) {
-      addToast(error.code === '23503' ? `Cannot delete "${name}" — it is linked to purchases or stock.` : error.message, 'error')
+      addToast(error.code === '23503' ? `Cannot delete — it is linked to purchases or stock.` : error.message, 'error')
+      setConfirmDelete(null)
       return
     }
     addToast('Item deleted', 'success')
+    setConfirmDelete(null)
     loadItems()
   }
 
@@ -196,7 +206,7 @@ function ItemMasterTab() {
                       <button className="btn-icon btn-sm" onClick={() => editItem(item)} title="Edit">
                         <Edit2 size={15} />
                       </button>
-                      <button className="btn-icon btn-sm" onClick={() => deleteItem(item.id, item.name)} title="Delete" style={{ color: 'var(--red)' }}>
+                      <button className="btn-icon btn-sm" onClick={() => deleteItem(item.id)} title="Delete" style={{ color: 'var(--red)' }}>
                         <Trash2 size={15} />
                       </button>
                     </div>
@@ -210,6 +220,21 @@ function ItemMasterTab() {
           </tbody>
         </table>
       </div>
+
+      {confirmDelete && (
+        <div className="modal-overlay" onClick={() => !deleting && setConfirmDelete(null)}>
+          <div className="modal-card" onClick={e => e.stopPropagation()}>
+            <h3 className="modal-title">Delete Item?</h3>
+            <p style={{ marginBottom: '1rem', color: 'var(--text-muted)' }}>This action cannot be undone.</p>
+            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+              <button className="btn btn-outline" onClick={() => setConfirmDelete(null)} disabled={deleting}>Cancel</button>
+              <button className="btn btn-danger" onClick={handleDeleteConfirm} disabled={deleting}>
+                {deleting ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showForm && (
         <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) resetForm() }}>
@@ -325,7 +350,7 @@ function StockViewTab() {
     setSelectedInvoice(inv)
     setInvoiceLoading(true)
     setShowModal(true)
-    const { data: li, error: liErr } = await supabase.from('invoice_items').select('*, item_master!inner(name, hsn_code)').eq('invoice_id', inv.id).order('sno')
+    const { data: li, error: liErr } = await supabase.from('invoice_items').select('*, item_master!left(name, hsn_code)').eq('invoice_id', inv.id).order('sno')
     if (li) setInvoiceItems(li)
     if (liErr) addToast('Failed to load line items', 'error')
     setInvoiceLoading(false)
