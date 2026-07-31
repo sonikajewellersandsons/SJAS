@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../components/Toast'
 import ComboBox from '../components/ComboBox'
+import { logAction } from '../lib/audit'
 import { Plus, Search, X, Eye, Trash2, RotateCcw, Edit3 } from 'lucide-react'
 
 function fmt(n) {
@@ -71,6 +72,7 @@ export default function InwardSupplyPage() {
       ])
       if (vouchRes.error) addToast('Failed to load vouchers', 'error')
       if (custRes.error) addToast('Failed to load customers', 'error')
+      if (metalRes.error) addToast('Failed to load metal items', 'error')
       setVouchers(vouchRes.data || [])
       setCustomers(custRes.data || [])
       setMetalItems(metalRes.data || [])
@@ -134,7 +136,7 @@ export default function InwardSupplyPage() {
   async function loadEditVoucher(invNoToEdit) {
     const { data, error } = await supabase
       .from('inward_supply_vouchers')
-      .select('*, item_master!inner(name)')
+      .select('*, item_master!left(name)')
       .eq('inv_no', invNoToEdit)
       .order('id')
     if (error || !data || data.length === 0) { addToast('Voucher not found', 'error'); return }
@@ -204,10 +206,21 @@ export default function InwardSupplyPage() {
     const validLines = lineItems.filter(l => l.metal && parseFloat(l.weight) > 0)
     if (validLines.length === 0) { addToast('Add at least one item with weight', 'error'); return }
 
+    // Number collision guard (create only — edit keeps its own number)
+    if (!editMode) {
+      const { data: dup } = await supabase.from('inward_supply_vouchers').select('inv_no').eq('inv_no', invNo).limit(1)
+      if (dup && dup.length > 0) {
+        addToast(`Voucher number ${invNo} is already in use.`, 'error')
+        await generateInvNo()
+        return
+      }
+    }
+
     setSaving(true)
     try {
-      const rows = validLines.map((line, idx) => {
-        const ct = lineTotals[lineItems.indexOf(line)]
+      const rows = validLines.map((line) => {
+        const li = lineItems.indexOf(line)
+        const ct = lineTotals[li >= 0 ? li : 0]
         const metalItem = metalItems.find(m => m.name.toLowerCase() === line.metal)
         if (!metalItem) throw new Error('Metal type not found: ' + line.metal)
         return {
@@ -231,12 +244,15 @@ export default function InwardSupplyPage() {
       const finalRows = rows.map(r => ({ ...r, grand_total: Math.round(grandTotal * 100) / 100 }))
 
       if (editMode && editInvNo) {
-        // Insert new rows first, then delete old to avoid data loss on failure
-        const { error: insErr } = await supabase.from('inward_supply_vouchers').insert(finalRows)
-        if (insErr) throw new Error(insErr.message)
+        // Delete old rows first, then insert new — inv_no is NOT unique (one
+        // voucher spans multiple rows), so insert-first would collide with the
+        // existing rows and delete-after would wipe the freshly inserted ones.
         const { error: delErr } = await supabase.from('inward_supply_vouchers').delete().eq('inv_no', editInvNo)
         if (delErr) throw new Error(delErr.message)
+        const { error: insErr } = await supabase.from('inward_supply_vouchers').insert(finalRows)
+        if (insErr) throw new Error(insErr.message)
         addToast(`Voucher ${editInvNo} updated`, 'success')
+        logAction('voucher_updated', 'inward_supply_vouchers', null, { inv_no: editInvNo, grand_total: grandTotal })
       } else {
         const { error } = await supabase.from('inward_supply_vouchers').insert(finalRows)
         if (error) throw error
@@ -254,6 +270,7 @@ export default function InwardSupplyPage() {
           }
         }
         addToast(`Voucher ${invNo} created`, 'success')
+        logAction('voucher_created', 'inward_supply_vouchers', null, { inv_no: invNo, grand_total: grandTotal })
       }
 
       setShowForm(false)
@@ -268,7 +285,7 @@ export default function InwardSupplyPage() {
   async function viewDetails(invNoToView) {
     const { data, error } = await supabase
       .from('inward_supply_vouchers')
-      .select('*, item_master!inner(name)')
+      .select('*, item_master!left(name)')
       .eq('inv_no', invNoToView)
       .order('id')
     if (error || !data || data.length === 0) { addToast('Voucher not found', 'error'); return }
@@ -286,6 +303,7 @@ export default function InwardSupplyPage() {
       return
     }
     addToast(`Voucher ${invNoToDel} deleted`, 'success')
+    logAction('voucher_deleted', 'inward_supply_vouchers', null, { inv_no: invNoToDel })
     setConfirmDelete(null)
     setShowModal(false)
     setDeleting(false)
@@ -603,7 +621,7 @@ export default function InwardSupplyPage() {
                     {viewItems.map((item, i) => (
                       <tr key={item.id}>
                         <td className="text-xs text-secondary">{i + 1}</td>
-                        <td style={{ fontWeight: 600 }}>{item.item_master?.name || `Item #${item.item_id}`}</td>
+                        <td style={{ fontWeight: 600 }}>{item.item_master?.name || 'Deleted item'}</td>
                         <td><span className="badge badge-gold" style={{ fontSize: '10px' }}>{item.purity}</span></td>
                         <td className="font-mono text-xs">{Number(item.weight).toFixed(3)}</td>
                         <td className="font-mono text-xs">{item.pcs}</td>

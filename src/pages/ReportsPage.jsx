@@ -68,7 +68,8 @@ function useMonthlyData(year, addToast) {
     ;(async () => {
       try {
         const { data: settings } = await supabase.from('settings').select('value').eq('key', 'shop_state').maybeSingle()
-        const shopState = (settings?.value || '').toLowerCase().replace(/^"|"$/g, '') || 'delhi'
+        let shopState = 'delhi'
+        try { const val = settings?.value; if (val) shopState = JSON.parse(val).toLowerCase() } catch {}
         const { data, error } = await supabase
           .from('invoices')
           .select('date, grand_total, tax_total, customer_state, subtotal, hallmark_total')
@@ -76,7 +77,7 @@ function useMonthlyData(year, addToast) {
           .lte('date', fyEnd)
           .order('date')
         if (cancelled) return
-        if (error) { setLoading(false); return }
+        if (error) { addToast('Failed to load report data', 'error'); setLoading(false); return }
         const byMonth = {}
         for (const inv of (data || [])) {
           const m = inv.date ? inv.date.slice(0, 7) : 'unknown'
@@ -227,6 +228,7 @@ function MonthDrillDown({ month, onClose, addToast }) {
     supabase.from('invoices').select('id, inv_no, date, customer_name, customer_state, subtotal, tax_total, grand_total, payment_mode')
       .gte('date', from).lte('date', to).order('date')
       .then(({ data }) => { setInvoices(data || []); setLoading(false) })
+      .catch(err => { addToast('Failed to load month details', 'error'); setLoading(false) })
   }, [month])
 
   return (
@@ -306,7 +308,7 @@ function TaxReport({ year, addToast }) {
               const sgst = m.intra * 0.015
               const igst = m.inter * 0.03
               const goodsTax = cgst + sgst + igst
-              const hallmarkTax = m.tax - goodsTax
+              const hallmarkTax = Math.max(0, m.tax - goodsTax)
               return (
                 <tr key={m.month}>
                   <td style={{ fontWeight: 700 }}>{MONTHS[parseInt(m.month.split('-')[1]) - 1]} {m.month.split('-')[0]}</td>
@@ -355,12 +357,14 @@ function HsnSummary({ year, addToast }) {
       if (invIds.length === 0) { setData([]); setLoading(false); return }
       const { data: items } = await supabase
         .from('invoice_items')
-        .select('price, tax_amount, weight, hallmark_charge, invoice_id, item_master!inner(name, hsn_code, category)')
+        .select('price, tax_amount, weight, hallmark_charge, invoice_id, material_type, description_extra, item_master!left(name, hsn_code, category)')
         .in('invoice_id', invIds)
       const byHsn = {}
       for (const it of (items || [])) {
-        const hsn = it.item_master?.hsn_code || 'OTHER'
-        if (!byHsn[hsn]) byHsn[hsn] = { hsn, name: it.item_master?.name || '', weight: 0, value: 0, tax: 0 }
+        const isSilver = it.item_id === null && (it.material_type === 'silver_925' || it.material_type === 'silver_ornaments')
+        const is18k = it.item_id === null && it.material_type === 'gold_18k'
+        const hsn = isSilver ? '71131130' : is18k ? '71131913' : it.item_master?.hsn_code || 'OTHER'
+        if (!byHsn[hsn]) byHsn[hsn] = { hsn, name: it.item_master?.name || it.description_extra || (isSilver ? 'Silver' : is18k ? 'Gold 18K' : ''), weight: 0, value: 0, tax: 0 }
         byHsn[hsn].weight += parseFloat(it.weight) || 0
         byHsn[hsn].value += parseFloat(it.price) || 0
         byHsn[hsn].tax += parseFloat(it.tax_amount) || 0
@@ -521,7 +525,8 @@ function OthersReport({ year, addToast }) {
     ;(async () => {
       try {
         const { data: shopSetting } = await supabase.from('settings').select('value').eq('key', 'shop_state').maybeSingle()
-        const shopState = (shopSetting?.value || '').toLowerCase().replace(/^"|"$/g, '') || 'delhi'
+        let shopState = 'delhi'
+        try { const val = shopSetting?.value; if (val) shopState = JSON.parse(val).toLowerCase() } catch {}
         const { data: invoices } = await supabase.from('invoices').select('id, payment_mode, cash_amt, bank_amt, grand_total, date, customer_state').gte('date', fyStart).lte('date', fyEnd)
 
         // Payment mode
@@ -552,11 +557,13 @@ function OthersReport({ year, addToast }) {
         if (invIds.length > 0) {
           const { data: items } = await supabase
             .from('invoice_items')
-            .select('price, tax_amount, invoice_id, item_master!inner(name, hsn_code, category)')
+            .select('price, tax_amount, invoice_id, material_type, item_master!left(name, hsn_code, category)')
             .in('invoice_id', invIds)
           const byCat = {}
           for (const it of (items || [])) {
-            const cat = it.item_master?.category || 'Other'
+            const isSilver = it.item_id === null && (it.material_type === 'silver_925' || it.material_type === 'silver_ornaments')
+            const is18k = it.item_id === null && it.material_type === 'gold_18k'
+            const cat = isSilver ? 'Silver' : is18k ? 'Gold (18K)' : it.item_master?.category || 'Other'
             if (!byCat[cat]) byCat[cat] = { category: cat, value: 0, tax: 0, count: 0 }
             byCat[cat].value += parseFloat(it.price) || 0
             byCat[cat].tax += parseFloat(it.tax_amount) || 0

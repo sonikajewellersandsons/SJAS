@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../components/Toast'
 import ComboBox from '../components/ComboBox'
+import { logAction } from '../lib/audit'
 import { Search, Plus, X, FileText } from 'lucide-react'
 
 const DEFAULT_TAX_PCT = 3
@@ -11,6 +12,16 @@ const HALLMARK_TAX_PCT = 18
 
 function fmt(n) {
   return '₹' + (Number(n) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+// True if the invoice/voucher number is already used by another record
+async function invNoTaken(invNo, excludeId) {
+  if (!invNo) return false
+  const { data: inv } = await supabase.from('invoices').select('id').eq('inv_no', invNo).maybeSingle()
+  if (inv && inv.id !== excludeId) return true
+  const { data: iws } = await supabase.from('inward_supply_vouchers').select('inv_no').eq('inv_no', invNo).limit(1)
+  if (iws && iws.length > 0) return true
+  return false
 }
 
 export default function BillingPage() {
@@ -83,14 +94,15 @@ export default function BillingPage() {
   async function loadData(pendingEditId) {
     setLoading(true)
     try {
-      const [custRes, itemsRes, settingsRes, stockRes, inwardRes] = await Promise.all([
-        supabase.from('customers').select('*').order('name'),
+      const results = await Promise.allSettled([
+        supabase.from('customers').select('id, name, phone, address, state, aadhaar, pan, pincode, gstin').order('name').limit(1000),
         supabase.from('item_master').select('id, name, hallmark_charge, purity, material_type').eq('active', true).order('name'),
         supabase.from('settings').select('key, value'),
         supabase.rpc('get_stock_lots'),
         supabase.from('inward_supply_vouchers').select('id, inv_no, customer_id, customer_name, grand_total, date')
           .not('grand_total', 'eq', 0).order('created_at', { ascending: false }).limit(200),
       ])
+      const [custRes, itemsRes, settingsRes, stockRes, inwardRes] = results.map(r => r.status === 'fulfilled' ? r.value : { data: null })
       if (custRes.data) setCustomers(custRes.data)
       if (itemsRes.data) setMasterItems(itemsRes.data)
       if (stockRes.data) setStockLots(stockRes.data)
@@ -121,6 +133,17 @@ export default function BillingPage() {
             const converted = Math.round(parsed / 1.03 * 916 / 999)
             setGoldRate(converted)
             setGoldRateStr(converted.toLocaleString('en-IN'))
+          }
+        } else {
+          // Fallback: last saved billing gold rate from settings
+          const goldSetting = (settingsRes.data || []).find(s => s.key === 'gold_rate')
+          const savedGold = goldSetting?.value
+          if (savedGold != null) {
+            const g = parseFloat(savedGold)
+            if (!isNaN(g) && g > 0) {
+              setGoldRate(g)
+              setGoldRateStr(g.toLocaleString('en-IN'))
+            }
           }
         }
       }
@@ -159,7 +182,7 @@ export default function BillingPage() {
             item_id: 'gold18k',
             description: item.description_extra || 'Gold Jewellery (18K)',
             weight: item.weight.toString(),
-            labour_pct: item.labour_pct ? item.labour_pct.toString() : DEFAULT_LABOUR_PCT.toString(),
+            labour_pct: item.labour_pct != null && item.labour_pct !== '' ? item.labour_pct.toString() : DEFAULT_LABOUR_PCT.toString(),
             tax_pct: '0',
             hallmark_charge: 0,
             huid_enabled: false,
@@ -212,24 +235,23 @@ export default function BillingPage() {
 
   async function generateInvNo() {
     const fy = await getFy()
-    const { data: existing } = await supabase.from('invoices').select('inv_no').ilike('inv_no', `SJS/${fy}/%`).order('inv_no')
-    const used = (existing || []).map(inv => parseInt(inv.inv_no.split('/').pop())).filter(n => !isNaN(n)).sort((a, b) => a - b)
-    let next = 1
-    for (const n of used) {
-      if (n === next) next++
-      else break
-    }
     const { data: cur } = await supabase.from('inv_sequences').select('last_no').eq('type', 'sale').eq('fy', fy).maybeSingle()
-    const seqNext = cur ? (parseInt(cur.last_no) || 0) + 1 : null
-    const suggest = seqNext !== null ? Math.min(next, seqNext) : next
-    setInvNo(`SJS/${fy}/${String(suggest).padStart(3, '0')}`)
+    const seqNext = cur ? (parseInt(cur.last_no) || 0) + 1 : 1
+    setInvNo(`SJS/${fy}/${String(seqNext).padStart(3, '0')}`)
   }
 
-  const filteredCustomers = customers.filter(c =>
-    c.name.toLowerCase().includes(custSearch.toLowerCase()) ||
-    c.phone.includes(custSearch) ||
-    c.aadhaar?.includes(custSearch)
-  )
+  const filteredCustomers = useMemo(() => {
+    const q = custSearch.toLowerCase()
+    const digits = custSearch.trim().replace(/^\+91\s*/, '').replace(/\D/g, '')
+    const digitsNo91 = digits.length > 10 && digits.startsWith('91') ? digits.slice(2) : digits
+    return customers.filter(c =>
+      c.name.toLowerCase().includes(q) ||
+      c.phone?.includes(custSearch) ||
+      c.phone?.includes(digits) ||
+      c.phone?.includes(digitsNo91) ||
+      c.aadhaar?.includes(digits)
+    )
+  }, [customers, custSearch])
 
   useEffect(() => {
     function handleClick(e) {
@@ -275,41 +297,93 @@ export default function BillingPage() {
   // Items
   const goldPerGram = goldRate / 10
 
-  function checkStock(itemId, weight, huidEnabled, excludeIndex) {
+  // Pre-index stock lots by name for O(1) lookup
+  const stockLotsByName = useMemo(() => {
+    const map = {}
+    for (const lot of stockLots) {
+      if (!map[lot.item_name]) map[lot.item_name] = []
+      map[lot.item_name].push(lot)
+    }
+    return map
+  }, [stockLots])
+
+  // Match a current line to its original (edit mode) by content, not position,
+  // so adding/removing/reordering lines during an edit stays correct.
+  function findOrig(lineItemsArr, idx, itemId, weight, huidEnabled) {
+    if (!editMode || !editOriginalItems.current || editOriginalItems.current.length === 0) return null
+    const originals = editOriginalItems.current
+    const claimed = new Set()
+    for (let i = 0; i < idx; i++) {
+      const ln = lineItemsArr[i]
+      if (!ln.item_id) continue
+      const oi = originals.findIndex((o, j) =>
+        !claimed.has(j) && o.item_id != null &&
+        parseInt(o.item_id) === parseInt(ln.item_id) &&
+        parseFloat(o.weight) === parseFloat(ln.weight) &&
+        o.huid === (ln.huid_enabled === true)
+      )
+      if (oi >= 0) claimed.add(oi)
+    }
+    if (!itemId) return null
+    const oi = originals.findIndex((o, j) =>
+      !claimed.has(j) && o.item_id != null &&
+      parseInt(o.item_id) === parseInt(itemId) &&
+      parseFloat(o.weight) === parseFloat(weight) &&
+      o.huid === (huidEnabled === true)
+    )
+    return oi >= 0 ? originals[oi] : null
+  }
+
+  function checkStock(itemId, weight, huidEnabled, excludeIndex, agg) {
     if (!itemId || !weight) return null
+
+    const a = agg || {}
+    const silverDemand = a.silverDemand || {}
+    const origSilverDemand = a.origSilverDemand || {}
+    const goldDemand = a.goldDemand || 0
+    const origGoldDemand = a.origGoldDemand || 0
+
+    // ── Silver ──
     if (itemId === 'silver') {
       const line = lineItems[excludeIndex >= 0 ? excludeIndex : 0]
-      const avail = silverStock[line?.silver_type] || 0
-      const w = parseFloat(weight) || 0
-      return { available: w <= avail }
+      const type = line?.silver_type
+      if (!type) return { available: true }
+      // Net new demand across ALL lines of this silver type vs original invoice
+      const net = (silverDemand[type] || 0) - (origSilverDemand[type] || 0)
+      return { available: net <= (silverStock[type] || 0) }
     }
+
+    // ── Gold 18K ──
     if (itemId === 'gold18k') {
-      const w = parseFloat(weight) || 0
-      return { available: w <= goldStock }
+      const net = goldDemand - origGoldDemand
+      return { available: net <= goldStock }
     }
+
+    // ── Regular items (from item_master) ──
     const w = parseFloat(weight)
     if (!w) return null
     const item = masterItems.find(m => m.id === parseInt(itemId))
     if (!item) return null
-    // Skip stock check for original items in edit mode
-    if (editMode && excludeIndex >= 0 && excludeIndex < editOriginalItems.current.length) {
-      const orig = editOriginalItems.current[excludeIndex]
-      if (orig && orig.item_id === parseInt(itemId) && parseFloat(orig.weight) === w && orig.huid === !!huidEnabled) {
-        return { available: true }
-      }
+
+    // Edit mode: line matches an original → its stock is already consumed
+    const orig = findOrig(lineItems, excludeIndex, itemId, weight, huidEnabled)
+    if (orig) {
+      if (parseFloat(orig.weight) === w && orig.huid === !!huidEnabled) return { available: true }
+      if (parseFloat(orig.weight) >= w && orig.huid === !!huidEnabled) return { available: true }
     }
-    const match = stockLots.find(l =>
-      l.item_name === item.name && Number(l.weight) === w && l.huid === !!huidEnabled && l.avail_pcs > 0
+
+    const lots = stockLotsByName[item.name]
+    if (!lots) return { available: false }
+    const match = lots.find(l =>
+      Number(l.weight) === w && l.huid === !!huidEnabled && l.avail_pcs > 0
     )
     if (!match) return { available: false }
     const alreadyClaimed = lineItems.filter((ln, i) => {
       if (i >= excludeIndex) return false
-      // Skip original items in edit mode — they already consumed stock on first save
-      if (editMode && i < editOriginalItems.current.length) {
-        const orig = editOriginalItems.current[i]
-        if (orig && orig.item_id === parseInt(ln.item_id) && parseFloat(orig.weight) === parseFloat(ln.weight) && orig.huid === (ln.huid_enabled === true)) {
-          return false
-        }
+      // Skip lines unchanged from their original (their stock is already consumed)
+      if (editMode && editOriginalItems.current) {
+        const lnOrig = findOrig(lineItems, i, ln.item_id, ln.weight, ln.huid_enabled)
+        if (lnOrig) return false
       }
       return ln.item_id && parseFloat(ln.weight) === w &&
         masterItems.find(m => m.id === parseInt(ln.item_id))?.name === item.name &&
@@ -343,6 +417,7 @@ export default function BillingPage() {
           newLine.hallmark_charge = Number(item.hallmark_charge)
           newLine.is_silver = false
           newLine.silver_rate = ''
+          newLine.silver_type = ''
           newLine.is_gold_18k = false
         }
       }
@@ -367,55 +442,82 @@ export default function BillingPage() {
     if (!line.item_id || line.is_silver || line.is_gold_18k) return []
     const item = masterItems.find(m => m.id === parseInt(line.item_id))
     if (!item) return []
-    let lots = stockLots.filter(l => l.item_name === item.name && l.avail_pcs > 0)
+    let lots = stockLotsByName[item.name]
+    if (!lots) return []
+    lots = lots.filter(l => l.avail_pcs > 0)
     const w = parseFloat(line.weight)
     if (w) lots = lots.filter(l => Number(l.weight) === w)
     return lots
   }
 
-  // Calculations — discount applied BEFORE tax per GST
-  function calcLinePrice(line) {
-    const w = parseFloat(line.weight) || 0
-    if (line.is_silver) {
-      const rate = parseFloat(line.silver_rate) || 0
-      const price = w * rate
-      return { ratePerGram: rate, price, hc: 0 }
+  // Memoized calculations — discount applied BEFORE tax per GST
+  const {
+    linePrices, lineTotals, totalPrice, totalHc, totalTax, totalHcTax,
+    discAmt, beforeAdj, afterAdj, roundOff, grandTotal,
+    stockResults, allStockAvailable, silverNet, goldNet,
+  } = useMemo(() => {
+    // Net silver/18K demand across ALL lines (new demand minus original demand
+    // in edit mode) so multiple lines can't jointly exceed available stock.
+    const silverDemand = { silver_925: 0, silver_ornaments: 0 }
+    const origSilverDemand = { silver_925: 0, silver_ornaments: 0 }
+    let goldDemand = 0
+    let origGoldDemand = 0
+    for (const ln of lineItems) {
+      if (ln.is_silver) silverDemand[ln.silver_type] = (silverDemand[ln.silver_type] || 0) + (parseFloat(ln.weight) || 0)
+      else if (ln.is_gold_18k) goldDemand += parseFloat(ln.weight) || 0
     }
-    const item = masterItems.find(m => m.id === parseInt(line.item_id))
-    const is18k = line.is_gold_18k || item?.material_type === 'gold_18k'
-    const baseRate = is18k ? goldPerGram * 18 / 22 : goldPerGram
-    const goldValue = w * baseRate
-    const lp = parseFloat(line.labour_pct); const labourPct = !isNaN(lp) ? lp : DEFAULT_LABOUR_PCT
-    const labour = goldValue * labourPct / 100
-    const price = goldValue + labour
-    const ratePerGram = baseRate * (1 + labourPct / 100)
-    const hc = parseFloat(line.hallmark_charge) || 0
-    return { ratePerGram, price, hc }
-  }
+    for (const o of (editOriginalItems.current || [])) {
+      if (!o.item_id && o.material_type === 'gold_18k') origGoldDemand += parseFloat(o.weight) || 0
+      else if (!o.item_id && o.material_type) origSilverDemand[o.material_type] = (origSilverDemand[o.material_type] || 0) + (parseFloat(o.weight) || 0)
+    }
 
-  const linePrices = lineItems.map(calcLinePrice)
-  const totalPrice = linePrices.reduce((s, l) => s + l.price, 0)
-  const totalHc = linePrices.reduce((s, l) => s + l.hc, 0)
-  const discAmt = parseFloat(discount || 0)
-  const discountProp = totalPrice > 0 ? discAmt / totalPrice : 0
-
-  // Final calc per line with discount applied before tax
-  function calcLine(line, priceData) {
-    const discountedPrice = priceData.price * (1 - discountProp)
-    const tax = discountedPrice * (parseFloat(line.tax_pct) || 0) / 100
-    const hcTax = priceData.hc * HALLMARK_TAX_PCT / 100
-    return { ...priceData, discountedPrice, tax, hcTax, total: discountedPrice + tax + priceData.hc + hcTax }
-  }
-
-  const lineTotals = lineItems.map((l, i) => calcLine(l, linePrices[i]))
-  const totalTax = lineTotals.reduce((s, l) => s + l.tax, 0)
-  const totalHcTax = lineTotals.reduce((s, l) => s + l.hcTax, 0)
-  const beforeAdj = totalPrice - discAmt + totalTax + totalHc + totalHcTax
-  const afterAdj = beforeAdj - parseFloat(adjAmt || 0)
-  const roundOff = Math.round(afterAdj) - afterAdj
-  const grandTotal = afterAdj + roundOff
-  const stockResults = lineItems.map((l, i) => checkStock(l.item_id, l.weight, l.huid_enabled, i))
-  const allStockAvailable = lineItems.every((l, i) => !l.item_id || stockResults[i]?.available)
+    function calcLinePrice(line) {
+      const w = parseFloat(line.weight) || 0
+      if (line.is_silver) {
+        const rate = parseFloat(line.silver_rate) || 0
+        return { ratePerGram: rate, price: w * rate, hc: 0 }
+      }
+      const item = masterItems.find(m => m.id === parseInt(line.item_id))
+      const is18k = line.is_gold_18k || item?.material_type === 'gold_18k'
+      const baseRate = is18k ? goldPerGram * 18 / 22 : goldPerGram
+      const goldValue = w * baseRate
+      const lp = parseFloat(line.labour_pct)
+      const labourPct = !isNaN(lp) ? lp : DEFAULT_LABOUR_PCT
+      return {
+        ratePerGram: baseRate * (1 + labourPct / 100),
+        price: goldValue * (1 + labourPct / 100),
+        hc: parseFloat(line.hallmark_charge) || 0,
+      }
+    }
+    const lp = lineItems.map(calcLinePrice)
+    const tp = lp.reduce((s, l) => s + l.price, 0)
+    const thc = lp.reduce((s, l) => s + l.hc, 0)
+    const da = parseFloat(discount || 0)
+    const dp = tp > 0 ? da / tp : 0
+    const lt = lineItems.map((l, i) => {
+      const discountedPrice = lp[i].price * (1 - dp)
+      const tax = discountedPrice * (parseFloat(l.tax_pct) || 0) / 100
+      const hcTax = lp[i].hc * HALLMARK_TAX_PCT / 100
+      return { ...lp[i], discountedPrice, tax, hcTax, total: discountedPrice + tax + lp[i].hc + hcTax }
+    })
+    const tt = lt.reduce((s, l) => s + l.tax, 0)
+    const thct = lt.reduce((s, l) => s + l.hcTax, 0)
+    const ba = tp - da + tt + thc + thct
+    const aa = ba - parseFloat(adjAmt || 0)
+    const ro = Math.round(aa) - aa
+    const sr = lineItems.map((l, i) => checkStock(l.item_id, l.weight, l.huid_enabled, i, { silverDemand, origSilverDemand, goldDemand, origGoldDemand }))
+    return {
+      linePrices: lp, totalPrice: tp, totalHc: thc,
+      discAmt: da, lineTotals: lt, totalTax: tt, totalHcTax: thct,
+      beforeAdj: ba, afterAdj: aa, roundOff: ro, grandTotal: aa + ro,
+      stockResults: sr, allStockAvailable: lineItems.every((l, i) => !l.item_id || sr[i] === null || sr[i]?.available),
+      silverNet: {
+        silver_925: (silverDemand.silver_925 || 0) - (origSilverDemand.silver_925 || 0),
+        silver_ornaments: (silverDemand.silver_ornaments || 0) - (origSilverDemand.silver_ornaments || 0),
+      },
+      goldNet: goldDemand - origGoldDemand,
+    }
+  }, [lineItems, goldRate, masterItems, stockLotsByName, silverStock, goldStock, discount, adjAmt, editMode, editOriginalItems])
 
   const savingRef = useRef(false)
 
@@ -430,18 +532,31 @@ export default function BillingPage() {
     if (validLines.length === 0) { addToast('Add at least one item', 'error'); savingRef.current = false; return }
     for (const l of validLines) {
       const origIdx = lineItems.indexOf(l)
-      if (!parseFloat(l.weight)) { addToast(`Item #${origIdx+1}: enter a valid weight`, 'error'); savingRef.current = false; return }
+      const w = parseFloat(l.weight)
+      if (!w || w <= 0) { addToast(`Item #${origIdx+1}: enter a valid weight`, 'error'); savingRef.current = false; return }
       if (l.is_silver) {
         if (l.silver_rate === '' || isNaN(parseFloat(l.silver_rate)) || parseFloat(l.silver_rate) <= 0) { addToast(`Item #${origIdx+1}: enter a valid silver rate`, 'error'); savingRef.current = false; return }
       } else if (l.is_gold_18k) {
-        if (l.labour_pct === '' || isNaN(parseFloat(l.labour_pct))) { addToast(`Item #${origIdx+1}: enter labour %`, 'error'); savingRef.current = false; return }
+        if (l.labour_pct === '' || isNaN(parseFloat(l.labour_pct)) || parseFloat(l.labour_pct) < 0) { addToast(`Item #${origIdx+1}: enter a valid labour %`, 'error'); savingRef.current = false; return }
       } else {
-        if (l.labour_pct === '' || isNaN(parseFloat(l.labour_pct))) { addToast(`Item #${origIdx+1}: enter labour %`, 'error'); savingRef.current = false; return }
+        if (l.labour_pct === '' || isNaN(parseFloat(l.labour_pct)) || parseFloat(l.labour_pct) < 0) { addToast(`Item #${origIdx+1}: enter a valid labour %`, 'error'); savingRef.current = false; return }
         if (!l.item_id || isNaN(parseInt(l.item_id))) { addToast(`Item #${origIdx+1}: select an item`, 'error'); savingRef.current = false; return }
       }
     }
     if (paymentMode === 'BOTH' && Math.abs(parseFloat(cashAmt || 0) + parseFloat(bankAmt || 0) - grandTotal) > 0.01) {
       addToast('Cash + Bank amount must equal Grand Total', 'error'); savingRef.current = false; return
+    }
+    if (discount > totalPrice) {
+      addToast('Discount cannot exceed total price', 'error'); savingRef.current = false; return
+    }
+
+    // Invoice number collision guard (second browser tab / manual override).
+    // Runs before any stock reversal so a conflict never corrupts state.
+    if (await invNoTaken(invNo, (editMode || editModeRef.current) && editInvoiceId ? editInvoiceId : null)) {
+      addToast(`Invoice number ${invNo} is already in use. A new number has been generated.`, 'error')
+      await generateInvNo()
+      savingRef.current = false
+      return
     }
 
     setSaving(true)
@@ -454,9 +569,9 @@ export default function BillingPage() {
         finalInvNo = invNo
         const { error: revMatErr } = await supabase.rpc('reverse_material_sale', { p_invoice_id: invId })
         if (revMatErr) throw revMatErr
+        reversed = true
         const { error: revErr } = await supabase.rpc('reverse_invoice_stock', { p_invoice_id: invId })
         if (revErr) throw revErr
-        reversed = true
         const { data: freshLots } = await supabase.rpc('get_stock_lots')
         if (freshLots) setStockLots(freshLots)
       } else {
@@ -467,8 +582,9 @@ export default function BillingPage() {
 
       if (isNewCustomer) {
         if (!newCust.name.trim()) { addToast('Customer name is required', 'error'); setSaving(false); savingRef.current = false; return }
+        let cleanedPhone = ''
         if (newCust.phone.trim()) {
-          const cleanedPhone = newCust.phone.trim().replace(/^\+91\s*/, '').replace(/\D/g, '')
+          cleanedPhone = newCust.phone.trim().replace(/^\+91\s*/, '').replace(/\D/g, '')
           const { data: existing } = await supabase.from('customers').select('id').eq('phone', cleanedPhone).maybeSingle()
           if (existing) {
             customerId = existing.id
@@ -485,7 +601,7 @@ export default function BillingPage() {
             aadhaar: newCust.aadhaar.trim(),
             pan: newCust.pan.trim().toUpperCase(),
             pincode: newCust.pincode.trim(),
-            gstin: newCust.gstin.trim(),
+            gstin: newCust.gstin.trim().toUpperCase(),
           }).select('id').single()
           if (custErr) throw custErr
           customerId = newCustData.id
@@ -500,6 +616,7 @@ export default function BillingPage() {
         customer_address: selectedCustomer ? (selectedCustomer.address || '') : newCust.address.trim(),
         customer_phone: selectedCustomer ? (selectedCustomer.phone || '') : newCust.phone.trim(),
         customer_state: selectedCustomer ? (selectedCustomer.state || 'Haryana') : newCust.state,
+        customer_gstin: selectedCustomer ? (selectedCustomer.gstin || '') : newCust.gstin.trim().toUpperCase(),
         gold_rate: Math.round(goldRate * 100) / 100,
         subtotal: Math.round(totalPrice * 100) / 100,
         hallmark_total: Math.round(totalHc * 100) / 100,
@@ -518,8 +635,6 @@ export default function BillingPage() {
       if (editMode && invId) {
         const { error: updErr } = await supabase.from('invoices').update(invoiceData).eq('id', invId)
         if (updErr) throw updErr
-        const { error: delErr } = await supabase.from('invoice_items').delete().eq('invoice_id', invId)
-        if (delErr) throw delErr
       } else {
         const { data: inv, error: invErr } = await supabase.from('invoices').insert(invoiceData).select('id').single()
         if (invErr) throw invErr
@@ -586,6 +701,12 @@ export default function BillingPage() {
       const { error: itemsErr } = await supabase.from('invoice_items').insert(invoiceItemsData)
       if (itemsErr) throw itemsErr
 
+      // Delete old items AFTER insert to avoid data loss on failure
+      if (editMode && invId) {
+        const { error: delErr } = await supabase.from('invoice_items').delete().eq('invoice_id', invId)
+        if (delErr) throw delErr
+      }
+
       const { error: procErr } = await supabase.rpc('process_invoice_stock', { p_invoice_id: invId })
       if (procErr) {
         if (!editMode) {
@@ -624,6 +745,7 @@ export default function BillingPage() {
       }
 
       addToast(editMode ? `Invoice ${finalInvNo} updated` : `Invoice ${finalInvNo} created`, 'success')
+      logAction(editMode ? 'invoice_updated' : 'invoice_created', 'invoices', invId, { inv_no: finalInvNo, grand_total: grandTotal, customer: selectedCustomer?.name || newCust.name || '' })
       const { data: freshLots } = await supabase.rpc('get_stock_lots')
       if (freshLots) setStockLots(freshLots)
       const { data: freshGold } = await supabase.from('material_purchases').select('weight, sold_weight').eq('type', 'gold_18k')
@@ -634,16 +756,24 @@ export default function BillingPage() {
         freshSilver.forEach(p => { stock[p.type] = (stock[p.type] || 0) + parseFloat(p.weight) - parseFloat(p.sold_weight) })
         setSilverStock(stock)
       }
-      resetForm()
+      await resetForm()
     } catch (err) {
-      addToast(err.message || 'Failed to save invoice', 'error')
+      if (err?.code === '23505') {
+        // Last-resort race: another tab committed the same number between our
+        // pre-check and the insert. Nothing was created yet for create mode;
+        // for edit mode the stock recovery below re-applies the old items.
+        addToast('Invoice number already exists. A new number has been generated.', 'error')
+        await generateInvNo()
+      } else {
+        addToast(err.message || 'Failed to save invoice', 'error')
+      }
       console.error('Invoice error:', err)
       // #1/#16: restore stock and reload form on edit failure
       if (reversed && editModeRef.current && editInvoiceId) {
         await supabase.rpc('reverse_material_sale', { p_invoice_id: editInvoiceId }).catch(() => {})
         await supabase.rpc('process_invoice_stock', { p_invoice_id: editInvoiceId }).catch(() => {})
         await supabase.rpc('process_material_sale', { p_invoice_id: editInvoiceId }).catch(() => {})
-        const { data: restored } = await supabase.from('invoices').select('*, invoice_items(*)').eq('id', editInvoiceId).single()
+        const { data: restored } = await supabase.from('invoices').select('*, invoice_items(*, item_master!left(name, hsn_code))').eq('id', editInvoiceId).single()
         if (restored) {
           const restoredCust = customers.find(c => c.id === restored.customer_id)
           if (restoredCust) setSelectedCustomer(restoredCust)
@@ -663,7 +793,7 @@ export default function BillingPage() {
                   item_id: 'gold18k',
                   description: item.description_extra || 'Gold Jewellery (18K)',
                   weight: item.weight.toString(),
-                  labour_pct: item.labour_pct ? item.labour_pct.toString() : DEFAULT_LABOUR_PCT.toString(),
+                  labour_pct: item.labour_pct != null && item.labour_pct !== '' ? item.labour_pct.toString() : DEFAULT_LABOUR_PCT.toString(),
                   tax_pct: '0',
                   hallmark_charge: 0,
                   huid_enabled: false,
@@ -711,7 +841,7 @@ export default function BillingPage() {
     }
   }
 
-  function resetForm() {
+  async function resetForm() {
     setDate(new Date().toISOString().split('T')[0])
     setSelectedCustomer(null)
     setIsNewCustomer(false)
@@ -730,7 +860,7 @@ export default function BillingPage() {
     editOriginalItems.current = []
     setGoldRate(0)
     setGoldRateStr('')
-    generateInvNo()
+    await generateInvNo()
   }
 
   if (loading) {
@@ -940,10 +1070,10 @@ export default function BillingPage() {
                                 </div>
                               </div>
                               {line.weight && (() => {
-                                const wt = parseFloat(line.weight) || 0
-                                const avail = silverStock[line.silver_type] || 0
+                                const net = silverNet[line.silver_type] || 0
+                                const remaining = (silverStock[line.silver_type] || 0) - net
                                 return <div style={{ marginTop: '2px' }}>
-                                  <span className={wt <= avail ? 'badge badge-green' : 'badge badge-red'} style={{ fontSize: '9px' }}>{wt <= avail ? '✓ ' + (avail - wt).toFixed(3) + 'g avail' : '✗ Only ' + avail.toFixed(3) + 'g avail'}</span>
+                                  <span className={remaining >= 0 ? 'badge badge-green' : 'badge badge-red'} style={{ fontSize: '9px' }}>{remaining >= 0 ? '✓ ' + remaining.toFixed(3) + 'g avail' : '✗ Only ' + remaining.toFixed(3) + 'g avail'}</span>
                                 </div>
                               })()}
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '6px' }}>
@@ -1024,9 +1154,9 @@ export default function BillingPage() {
                                 </div>
                               </div>
                               {line.weight && (() => {
-                                const wt = parseFloat(line.weight) || 0
+                                const remaining = goldStock - goldNet
                                 return <div style={{ marginTop: '2px' }}>
-                                  <span className={wt <= goldStock ? 'badge badge-green' : 'badge badge-red'} style={{ fontSize: '9px' }}>{wt <= goldStock ? '✓ ' + (goldStock - wt).toFixed(3) + 'g avail' : '✗ Only ' + goldStock.toFixed(3) + 'g avail'}</span>
+                                  <span className={remaining >= 0 ? 'badge badge-green' : 'badge badge-red'} style={{ fontSize: '9px' }}>{remaining >= 0 ? '✓ ' + remaining.toFixed(3) + 'g avail' : '✗ Only ' + remaining.toFixed(3) + 'g avail'}</span>
                                 </div>
                               })()}
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '6px' }}>

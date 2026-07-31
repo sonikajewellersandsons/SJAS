@@ -2,13 +2,15 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../components/Toast'
-import { Building2, Banknote, Users, ShieldCheck } from 'lucide-react'
+import { logAction } from '../lib/audit'
+import { Building2, Banknote, Users, ShieldCheck, History, RotateCcw } from 'lucide-react'
 
 const TABS = [
   { key: 'shop', label: 'Shop Details', icon: Building2 },
   { key: 'bank', label: 'Bank Details', icon: Banknote },
   { key: 'users', label: 'Users', icon: Users },
   { key: 'roles', label: 'Roles', icon: ShieldCheck },
+  { key: 'logs', label: 'Activity Log', icon: History },
 ]
 
 export default function SettingsPage() {
@@ -28,6 +30,7 @@ export default function SettingsPage() {
       {activeTab === 'bank' && <BankDetailsTab />}
       {activeTab === 'users' && <UsersTab />}
       {activeTab === 'roles' && <RolesTab />}
+      {activeTab === 'logs' && <ActivityLogTab />}
     </div>
   )
 }
@@ -84,6 +87,7 @@ function ShopDetailsTab() {
     const { error } = await supabase.from('settings').upsert(entries, { onConflict: 'key' })
     if (error) { addToast(error.message, 'error'); setSaving(false); return }
     addToast('Settings saved', 'success')
+    logAction('settings_saved', 'settings', null, { keys: Object.keys(form) })
     setSaving(false)
   }
 
@@ -180,7 +184,7 @@ function BankDetailsTab() {
     if (error) { addToast('Failed to load bank details', 'error'); setLoading(false); return }
     if (data?.value) {
       let b = {}
-    try { b = typeof data.value === 'string' ? JSON.parse(data.value) : data.value } catch { b = {} }
+    try { b = data.value ? (typeof data.value === 'string' ? JSON.parse(data.value) : data.value) : {} } catch { b = {} }
       setForm({
         bank_name: b.bank_name || '',
         account_holder: b.account_holder || '',
@@ -201,6 +205,7 @@ function BankDetailsTab() {
     )
     if (error) { addToast(error.message, 'error'); setSaving(false); return }
     addToast('Bank details saved', 'success')
+    logAction('bank_details_saved', 'settings', null, { bank_name: form.bank_name })
     setSaving(false)
   }
 
@@ -274,6 +279,7 @@ function UsersTab() {
     const { error } = await supabase.from('users').update({ role: newRole }).eq('id', userId)
     if (error) { addToast(error.message, 'error'); return }
     addToast('User role updated', 'success')
+    logAction('user_role_updated', 'users', userId, { role: newRole })
     loadUsers()
   }
 
@@ -281,6 +287,7 @@ function UsersTab() {
     const { error } = await supabase.from('users').update({ is_active: !current }).eq('id', userId)
     if (error) { addToast(error.message, 'error'); return }
     addToast(`User ${current ? 'deactivated' : 'activated'}`, 'success')
+    logAction(current ? 'user_deactivated' : 'user_activated', 'users', userId)
     loadUsers()
   }
 
@@ -313,7 +320,7 @@ function UsersTab() {
                     onChange={e => updateRole(u.id, e.target.value)}
                     disabled={u.id === currentUser?.id}
                   >
-                    {roles.map(r => <option key={r.role} value={r.role}>{r.label}</option>)}
+                    {roles.map(r => <option key={r.role} value={r.role}>{r.label || r.role}</option>)}
                   </select>
                 </td>
                 <td>
@@ -382,11 +389,16 @@ function RolesTab() {
           </thead>
           <tbody>
             {roles.map((r, i) => {
-              const perms = typeof r.permissions === 'string' ? JSON.parse(r.permissions) : (r.permissions || {})
+              const perms = (() => {
+                if (typeof r.permissions === 'string') {
+                  try { return JSON.parse(r.permissions) } catch { return {} }
+                }
+                return r.permissions || {}
+              })()
               return (
                 <tr key={r.id}>
                   <td className="text-xs text-muted">{i + 1}</td>
-                  <td style={{ fontWeight: 700 }}>{r.label}</td>
+                  <td style={{ fontWeight: 700 }}>{r.label || r.role}</td>
                   {Object.keys(PERM_LABELS).map(permKey => (
                     <td key={permKey} style={{ textAlign: 'center' }}>
                       <span className={`badge ${perms[permKey] ? 'badge-green' : 'badge-red'}`}>
@@ -400,6 +412,106 @@ function RolesTab() {
           </tbody>
         </table>
       </div>
+    </div>
+  )
+}
+
+/* ─── ACTIVITY LOG TAB ───────────────────────────────── */
+
+const ACTION_LABELS = {
+  login: 'Login',
+  logout: 'Logout',
+  invoice_created: 'Invoice created',
+  invoice_updated: 'Invoice updated',
+  invoice_deleted: 'Invoice deleted',
+  voucher_created: 'Inward voucher created',
+  voucher_updated: 'Inward voucher updated',
+  voucher_deleted: 'Inward voucher deleted',
+  purchase_created: 'Purchase created',
+  item_created: 'Item created',
+  item_updated: 'Item updated',
+  item_deleted: 'Item deleted',
+  customer_created: 'Customer created',
+  customer_updated: 'Customer updated',
+  customer_deleted: 'Customer deleted',
+  material_purchase_created: 'Material purchase created',
+  material_purchase_updated: 'Material purchase updated',
+  material_purchase_deleted: 'Material purchase deleted',
+  settings_saved: 'Settings saved',
+  bank_details_saved: 'Bank details saved',
+  user_role_updated: 'User role updated',
+  user_activated: 'User activated',
+  user_deactivated: 'User deactivated',
+}
+
+function fmtDetails(details) {
+  if (!details || typeof details !== 'object') return ''
+  return Object.entries(details)
+    .filter(([, v]) => v !== '' && v != null)
+    .map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`)
+    .join(', ')
+}
+
+function ActivityLogTab() {
+  const { addToast } = useToast()
+  const [logs, setLogs] = useState([])
+  const [users, setUsers] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => { loadLogs() }, [])
+
+  async function loadLogs() {
+    setLoading(true)
+    const [logRes, userRes] = await Promise.all([
+      supabase.from('logs').select('*').order('created_at', { ascending: false }).limit(300),
+      supabase.from('users').select('id, name').order('name'),
+    ])
+    if (logRes.error) addToast('Failed to load activity log', 'error')
+    if (userRes.error) addToast('Failed to load users', 'error')
+    setLogs(logRes.data || [])
+    setUsers(userRes.data || [])
+    setLoading(false)
+  }
+
+  if (loading) return <div className="loading-center"><div className="spinner" /></div>
+
+  const userMap = {}
+  for (const u of users) userMap[u.id] = u.name
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <h3 className="card-title">Activity Log</h3>
+        <button className="btn btn-sm btn-outline" onClick={loadLogs}><RotateCcw size={14} /> Refresh</button>
+      </div>
+      {logs.length === 0 ? (
+        <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-muted)' }}>No activity recorded yet</div>
+      ) : (
+        <div className="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>User</th>
+                <th>Action</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              {logs.map(l => (
+                <tr key={l.id}>
+                  <td className="text-xs text-secondary" style={{ whiteSpace: 'nowrap' }}>
+                    {l.created_at ? new Date(l.created_at).toLocaleString('en-IN') : '—'}
+                  </td>
+                  <td className="text-sm" style={{ fontWeight: 600 }}>{userMap[l.user_id] || '—'}</td>
+                  <td><span className="badge badge-blue">{ACTION_LABELS[l.action] || l.action}</span></td>
+                  <td className="text-xs text-secondary">{fmtDetails(l.details)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }

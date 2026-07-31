@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import { supabase, ROLES } from '../lib/supabase'
+import { logAction } from '../lib/audit'
 
 const AuthContext = createContext(null)
 
@@ -79,16 +80,20 @@ export function AuthProvider({ children }) {
   }
 
   async function signIn(email, password) {
+    // fetchProfile handled by auth listener
     const { data, error } = await supabase.auth.signInWithPassword({ email, password })
     if (error) throw error
+    logAction('login', 'auth', null, { email })
     return data
   }
 
   async function signOut() {
+    const uid = profile?.id ?? null
     await supabase.auth.signOut()
     setUser(null)
     setProfile(null)
     setPermissions({})
+    logAction('logout', 'auth', null, {}, uid)
   }
 
   return (

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../components/Toast'
+import { logAction } from '../lib/audit'
 import { Plus, Pencil, Trash2 } from 'lucide-react'
 
 function fmt(n) {
@@ -62,6 +63,8 @@ function MaterialDashboard({ type }) {
         supabase.from('material_purchases').select('*').eq('type', type).order('date', { ascending: false }),
         supabase.from('material_sales').select('*').eq('type', type).order('created_at', { ascending: false }).limit(200),
       ])
+      if (pRes.error) addToast('Failed to load purchases', 'error')
+      if (sRes.error) addToast('Failed to load sales', 'error')
       if (pRes.data) setPurchases(pRes.data)
       if (sRes.data) setSales(sRes.data)
     } catch (err) {
@@ -71,13 +74,14 @@ function MaterialDashboard({ type }) {
   }
 
   const totalWeight = purchases.reduce((s, p) => s + parseFloat(p.weight), 0)
-  const soldWeight = purchases.reduce((s, p) => s + parseFloat(p.sold_weight), 0)
+  const soldWeight = purchases.reduce((s, p) => s + parseFloat(p.sold_weight ?? 0), 0)
   const availWeight = totalWeight - soldWeight
 
   async function savePurchase(e) {
     e.preventDefault()
     if (!form.supplier.trim()) { addToast('Supplier name is required', 'error'); return }
-    if (!parseFloat(form.weight)) { addToast('Enter a valid weight', 'error'); return }
+    const fw = parseFloat(form.weight)
+    if (!fw || fw <= 0) { addToast('Enter a valid weight', 'error'); return }
     if (editingId) {
       const orig = purchases.find(p => p.id === editingId)
       const sold = parseFloat(orig?.sold_weight) || 0
@@ -102,6 +106,7 @@ function MaterialDashboard({ type }) {
       }
       if (error) throw error
       addToast(editingId ? 'Purchase updated' : 'Purchase added', 'success')
+      logAction(editingId ? 'material_purchase_updated' : 'material_purchase_created', 'material_purchases', editingId, { type, supplier: form.supplier.trim(), weight: parseFloat(form.weight) })
       setShowForm(false)
       setEditingId(null)
       setForm({ date: new Date().toISOString().split('T')[0], supplier: '', weight: '', notes: '' })
@@ -135,6 +140,7 @@ function MaterialDashboard({ type }) {
       const { error } = await supabase.from('material_purchases').delete().eq('id', confirmDelete)
       if (error) throw error
       addToast('Purchase deleted', 'success')
+      logAction('material_purchase_deleted', 'material_purchases', confirmDelete, { type })
       setConfirmDelete(null)
       loadData()
     } catch (err) {
@@ -233,14 +239,14 @@ function MaterialDashboard({ type }) {
                     <td>{p.supplier}</td>
                     <td className="font-mono">{fmtW(p.weight)}</td>
                     <td className="font-mono">{fmtW(p.sold_weight)}</td>
-                    <td className="font-mono">{fmtW(parseFloat(p.weight) - parseFloat(p.sold_weight))}</td>
+                    <td className="font-mono">{fmtW((parseFloat(p.weight) || 0) - (parseFloat(p.sold_weight) || 0))}</td>
                     <td style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{p.notes || '—'}</td>
                     <td>
                       <div style={{ display: 'flex', gap: '4px' }}>
-                        <button className="btn btn-sm btn-outline" title="Edit" onClick={() => startEdit(p)} disabled={parseFloat(p.sold_weight) > 0}>
+                        <button className="btn btn-sm btn-outline" title="Edit" onClick={() => startEdit(p)} disabled={(parseFloat(p.sold_weight) || 0) > 0}>
                           <Pencil size={12} />
                         </button>
-                        <button className="btn btn-sm btn-outline" style={{ color: 'var(--red)' }} title="Delete" onClick={() => setConfirmDelete(p.id)} disabled={parseFloat(p.sold_weight) > 0}>
+                        <button className="btn btn-sm btn-outline" style={{ color: 'var(--red)' }} title="Delete" onClick={() => setConfirmDelete(p.id)} disabled={(parseFloat(p.sold_weight) || 0) > 0}>
                           <Trash2 size={12} />
                         </button>
                       </div>

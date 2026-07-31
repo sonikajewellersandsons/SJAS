@@ -20,16 +20,21 @@ export default function DashboardPage() {
 
   async function loadStats() {
     try {
-      const [itemsRes, customersRes, invoicesRes] = await Promise.all([
+      const results = await Promise.allSettled([
         supabase.from('item_master').select('id', { count: 'exact', head: true }).eq('active', true),
         supabase.from('customers').select('id', { count: 'exact', head: true }),
-          supabase.from('invoices').select('id', { count: 'exact', head: true }),
+        supabase.from('invoices').select('id', { count: 'exact', head: true }),
       ])
-      setStats({
-        items: itemsRes.count || 0,
-        customers: customersRes.count || 0,
-        invoices: invoicesRes.count || 0,
+      const counts = { items: 0, customers: 0, invoices: 0 }
+      const labels = ['items', 'customers', 'invoices']
+      results.forEach((r, i) => {
+        if (r.status === 'rejected') {
+          addToast(r.reason?.message || `Query ${i} failed`, 'error')
+        } else if (r.value?.count != null) {
+          counts[labels[i]] = r.value.count
+        }
       })
+      setStats(counts)
     } catch (err) {
       addToast('Failed to load dashboard stats', 'error')
     } finally {

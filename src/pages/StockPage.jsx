@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import { useToast } from '../components/Toast'
 import ComboBox from '../components/ComboBox'
 import InvoiceModal from '../components/InvoiceModal'
+import { logAction } from '../lib/audit'
 import {
   Package, Plus, Edit2, Search, X, Trash2,
   TrendingUp, ShoppingCart, RotateCcw
@@ -116,6 +117,7 @@ function ItemMasterTab() {
       return
     }
     addToast('Item deleted', 'success')
+    logAction('item_deleted', 'item_master', confirmDelete)
     setConfirmDelete(null)
     loadItems()
   }
@@ -137,10 +139,12 @@ function ItemMasterTab() {
       const { error } = await supabase.from('item_master').update(payload).eq('id', editing)
       if (error) { addToast(error.message, 'error'); return }
       addToast('Item updated', 'success')
+      logAction('item_updated', 'item_master', editing, { name: payload.name, purity: payload.purity })
     } else {
       const { error } = await supabase.from('item_master').insert(payload)
       if (error) { addToast(error.message, 'error'); return }
       addToast('Item added', 'success')
+      logAction('item_created', 'item_master', null, { name: payload.name, purity: payload.purity })
     }
     resetForm()
     loadItems()
@@ -549,7 +553,7 @@ function PurchaseTab() {
     try {
       const [itemsRes, purchasesRes] = await Promise.all([
         supabase.from('item_master').select('id, name, purity').eq('active', true).order('name'),
-        supabase.from('purchases').select('*, item_master!inner(name)').order('created_at', { ascending: false }).limit(500)
+        supabase.from('purchases').select('*, item_master!left(name)').order('created_at', { ascending: false }).limit(500)
       ])
       if (itemsRes.error) addToast('Failed to load items', 'error')
       if (purchasesRes.error) addToast('Failed to load purchases', 'error')
@@ -572,7 +576,7 @@ function PurchaseTab() {
     try {
       const rows = validLines.map(line => ({
         supplier_name: supplier.name.trim(),
-        supplier_phone: supplier.phone.trim(),
+        supplier_phone: supplier.phone.trim().replace(/^\+91\s*/, '').replace(/\D/g, ''),
         item_id: parseInt(line.item_id),
         purity: line.purity,
         weight: parseFloat(line.weight),
@@ -588,6 +592,7 @@ function PurchaseTab() {
       if (error) throw error
 
       addToast(`${rows.length} item(s) purchased successfully`, 'success')
+      logAction('purchase_created', 'purchases', null, { items: rows.length, supplier: supplier.name.trim(), date, total_weight: totalWeight })
       resetForm()
       loadData()
     } catch (err) {
@@ -782,7 +787,7 @@ function PurchaseTab() {
                           {items.map((p, i) => (
                             <tr key={p.id}>
                               <td className="text-xs text-muted">{i + 1}</td>
-                              <td style={{ fontWeight: 600 }}>{p.item_master?.name}</td>
+                              <td style={{ fontWeight: 600 }}>{p.item_master?.name || 'Deleted Item'}</td>
                               <td><span className="badge badge-gold" style={{ fontSize: '10px' }}>{p.purity}</span></td>
                               <td><span className={`badge ${p.huid ? 'badge-green' : 'badge-red'}`} style={{ fontSize: '10px' }}>{p.huid ? 'Yes' : 'No'}</span></td>
                               <td className="font-mono">{Number(p.weight).toFixed(3)}</td>

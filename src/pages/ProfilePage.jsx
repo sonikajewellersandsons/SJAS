@@ -7,8 +7,12 @@ export default function ProfilePage() {
   const { profile, signOut } = useAuth()
   const [showConfirm, setShowConfirm] = useState(false)
 
-  function handleLogout() {
-    signOut()
+  async function handleLogout() {
+    try {
+      await signOut()
+    } catch (err) {
+      console.error('Sign out failed:', err)
+    }
     setShowConfirm(false)
   }
 

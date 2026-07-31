@@ -32,8 +32,9 @@ export default function SalesPage() {
     setLoading(true)
     const [itemsRes, matRes] = await Promise.all([
       supabase.from('invoice_items')
-        .select('*, invoices!inner(inv_no, date, customer_name, customer_phone, gold_rate, grand_total), item_master!inner(name, hsn_code, purity)')
+        .select('*, invoices!inner(inv_no, date, customer_name, customer_phone, gold_rate, grand_total), item_master!left(name, hsn_code, purity)')
         .order('id', { ascending: false }).limit(2000),
+      // TODO: Also fetch invoice_items with material_type IS NOT NULL that lack material_sales entries (orphan items)
       supabase.from('material_sales').select('*').order('created_at', { ascending: false }).limit(200),
     ])
     if (itemsRes.error) addToast('Failed to load sales', 'error')
@@ -128,7 +129,7 @@ export default function SalesPage() {
                   <tr key={it.id}>
                     <td className="text-xs text-muted">{i + 1}</td>
                 <td className="text-sm text-secondary">{inv.date || '—'}</td>
-                    <td style={{ fontWeight: 600, fontSize: '0.75rem' }}>{item.name || `Item #${it.item_id}`}</td>
+                    <td style={{ fontWeight: 600, fontSize: '0.75rem' }}>{item.name || it.description_extra || 'Quick Silver'}</td>
                     <td className="text-xs" style={{ fontWeight: 600 }}>{item.purity || '—'}</td>
                     <td className="font-mono text-xs">{Number(it.weight).toFixed(3)}</td>
                     <td className="font-mono text-xs" style={{ fontSize: '0.65rem' }}>{it.huid_code || '—'}</td>

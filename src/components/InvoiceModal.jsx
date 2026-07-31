@@ -10,7 +10,8 @@ function num(n) {
   return (Number(n) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
-export default function InvoiceModal({ show, invoice, lineItems, loading, onClose, onPrint, printLabel }) {
+export default function InvoiceModal({ show, invoice, lineItems: rawItems, loading, onClose, onPrint, printLabel }) {
+  const items = rawItems || []
   const [shopState, setShopState] = useState('haryana')
 
   useEffect(() => {
@@ -19,11 +20,11 @@ export default function InvoiceModal({ show, invoice, lineItems, loading, onClos
     }).catch(() => {})
   }, [])
 
-  if (!show || !invoice || lineItems.length === 0) return null
+  if (!show || !invoice || items.length === 0) return null
 
-  const goodsTax = lineItems.reduce((s, i) => s + Number(i.tax_amount), 0)
-  const hallmarkTax = Number(invoice.tax_total) - goodsTax
-  const totalHc = lineItems.reduce((s, i) => s + Number(i.hallmark_charge), 0)
+  const goodsTax = items.reduce((s, i) => s + Number(i.tax_amount), 0)
+  const hallmarkTax = Math.max(0, Number(invoice.tax_total) - goodsTax)
+  const totalHc = items.reduce((s, i) => s + Number(i.hallmark_charge), 0)
   const isIntraState = (invoice.customer_state || '').toLowerCase() === shopState
 
   return (
@@ -91,7 +92,7 @@ export default function InvoiceModal({ show, invoice, lineItems, loading, onClos
                   {(() => {
                     const goldRate = parseFloat(invoice.gold_rate) || 0
                     const goldPerGm = goldRate / 10
-                    return lineItems.map(item => {
+                    return items.map(item => {
                       const isSilver = !item.item_id && item.material_type !== 'gold_18k'
                       const isGold18k = !item.item_id && item.material_type === 'gold_18k'
                       const rate = parseFloat(item.rate_per_gram) || 0
@@ -107,7 +108,7 @@ export default function InvoiceModal({ show, invoice, lineItems, loading, onClos
                             {!isSilver && goldPerGm > 0 && (
                               <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
                                 {isGold18k
-                                  ? `(18K ₹${num(goldPerGm * 18 / 22)} + L ${item.labour_pct || 10}%)`
+                                  ? `(18K ₹${num(goldPerGm * 18 / 22)} + L ${item.labour_pct ?? 10}%)`
                                   : `(₹${num(goldPerGm)} + ₹${num(labour)})`
                                 }
                               </div>
@@ -193,7 +194,7 @@ export default function InvoiceModal({ show, invoice, lineItems, loading, onClos
               <span className="font-mono" style={{ color: 'var(--red)' }}>-{fmt(invoice.discount)}</span>
             </div>
           )}
-          {parseFloat(invoice.round_off) !== 0 && (
+          {invoice.round_off != null && parseFloat(invoice.round_off) !== 0 && (
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0' }}>
               <span className="font-bold">Round Off</span>
               <span className="font-mono" style={{ color: parseFloat(invoice.round_off) < 0 ? 'var(--red)' : 'var(--green)' }}>{fmt(invoice.round_off)}</span>

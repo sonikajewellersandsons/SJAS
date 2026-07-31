@@ -112,10 +112,12 @@ CREATE TABLE IF NOT EXISTS stock_ledger (
 );
 
 ALTER TABLE stock_ledger ADD COLUMN IF NOT EXISTS huid BOOLEAN;
+ALTER TABLE stock_ledger ADD COLUMN IF NOT EXISTS invoice_item_id BIGINT;
 
 CREATE INDEX IF NOT EXISTS idx_stock_ledger_item ON stock_ledger(item_id);
 CREATE INDEX IF NOT EXISTS idx_stock_ledger_date ON stock_ledger(date);
 CREATE INDEX IF NOT EXISTS idx_stock_ledger_source_ref ON stock_ledger(source_type, reference_id);
+CREATE INDEX IF NOT EXISTS idx_stock_ledger_inv_item ON stock_ledger(invoice_item_id);
 
 -- ─── PURCHASES ─────────────────────────────────────────
 
@@ -151,10 +153,11 @@ CREATE INDEX IF NOT EXISTS idx_purchases_item_id ON purchases(item_id);
 -- Exchange/trade-in: customer brings old items, shop values them,
 -- value offsets customer's new bill via invoices.adj_bill_id + adj_amount.
 -- NOT connected to stock/purchases — purely a valuation & adjustment mechanism.
+-- NB: inv_no is NOT unique — one voucher spans multiple rows (one per line item).
 
 CREATE TABLE IF NOT EXISTS inward_supply_vouchers (
   id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  inv_no          TEXT NOT NULL UNIQUE,
+  inv_no          TEXT NOT NULL,
   customer_id     BIGINT REFERENCES customers(id),
   customer_name   TEXT NOT NULL DEFAULT '',
   customer_phone  TEXT DEFAULT '',
@@ -170,6 +173,11 @@ CREATE TABLE IF NOT EXISTS inward_supply_vouchers (
   created_by      BIGINT,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Idempotent cleanup for databases that still have the old UNIQUE constraint
+ALTER TABLE inward_supply_vouchers DROP CONSTRAINT IF EXISTS inward_supply_vouchers_inv_no_key;
+DROP INDEX IF EXISTS inward_supply_vouchers_inv_no_key;
+CREATE INDEX IF NOT EXISTS idx_inward_inv_no ON inward_supply_vouchers(inv_no);
 
 ALTER TABLE inward_supply_vouchers ADD COLUMN IF NOT EXISTS customer_id BIGINT REFERENCES customers(id);
 ALTER TABLE inward_supply_vouchers ADD COLUMN IF NOT EXISTS grand_total NUMERIC(12,2) NOT NULL DEFAULT 0;
@@ -315,8 +323,8 @@ INSERT INTO settings (key, value) VALUES
   ('shop_gstin', '""'),
   ('shop_phone', '""'),
   ('shop_email', '""'),
-  ('shop_state', '"Delhi"'),
-  ('shop_city', '"Delhi"'),
+  ('shop_state', '"Haryana"'),
+  ('shop_city', '"Faridabad"'),
   ('shop_pan', '""'),
   ('bank_details', '{"bank_name":"","account_no":"","ifsc":"","branch":"","account_holder":""}'),
   ('declaration', '"We declare that this invoice shows the actual price of the goods described and that all particulars are true and correct."'),
@@ -371,7 +379,7 @@ LANGUAGE SQL STABLE AS $$
     COALESCE(SUM(CASE WHEN sl.direction = 'IN' THEN sl.pcs ELSE -sl.pcs END), 0)
   FROM item_master im
   LEFT JOIN stock_ledger sl ON sl.item_id = im.id
-  WHERE im.id = p_item_id AND im.active = true
+  WHERE im.id = p_item_id
   GROUP BY im.id, im.name;
 $$;
 
@@ -392,47 +400,15 @@ LANGUAGE SQL STABLE AS $$
     COALESCE(p.sold_inv_no, '')
   FROM purchases p
   JOIN item_master im ON im.id = p.item_id
-  ORDER BY 8 DESC, p.id DESC;
-$$;
-
--- Get next invoice sequence number
-DROP FUNCTION IF EXISTS get_next_inv_no(text, text);
-CREATE OR REPLACE FUNCTION get_next_inv_no(p_type inv_sequence_type, p_fy TEXT)
-RETURNS TEXT LANGUAGE plpgsql SECURITY DEFINER AS $$
-DECLARE
-  next_no INTEGER;
-BEGIN
-  INSERT INTO inv_sequences (type, fy, last_no)
-  VALUES (p_type, p_fy, 0)
-  ON CONFLICT (type, fy) DO NOTHING;
-
-  UPDATE inv_sequences SET last_no = last_no + 1
-  WHERE type = p_type AND fy = p_fy
-  RETURNING last_no INTO next_no;
-
-  RETURN LPAD(next_no::TEXT, 3, '0');
-END;
+  ORDER BY 8 DESC, p.id DESC LIMIT 500;
 $$;
 
 -- Peek next invoice number without incrementing
-DROP FUNCTION IF EXISTS peek_next_inv_no(text, text);
-CREATE OR REPLACE FUNCTION peek_next_inv_no(p_type inv_sequence_type, p_fy TEXT)
-RETURNS TEXT LANGUAGE plpgsql SECURITY DEFINER AS $$
-DECLARE
-  cur_no INTEGER;
-BEGIN
-  INSERT INTO inv_sequences (type, fy, last_no)
-  VALUES (p_type, p_fy, 0)
-  ON CONFLICT (type, fy) DO NOTHING;
+-- (Superseded by client-side gap detection in BillingPage/InwardSupplyPage)
 
-  SELECT last_no INTO cur_no FROM inv_sequences
-  WHERE type = p_type AND fy = p_fy;
-
-  RETURN LPAD((cur_no + 1)::TEXT, 3, '0');
-END;
-$$;
-
--- Process full invoice stock: mark purchases/inward supply sold + insert stock_ledger OUT
+-- Process full invoice stock: mark purchases sold + insert stock_ledger OUT
+-- Idempotency is keyed on invoice_item_id so that two identical lines
+-- (same item + weight + HUID) each get their own OUT ledger row.
 CREATE OR REPLACE FUNCTION process_invoice_stock(p_invoice_id BIGINT)
 RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE
@@ -442,15 +418,15 @@ BEGIN
   SELECT inv_no INTO v_inv_no FROM invoices WHERE id = p_invoice_id;
   IF v_inv_no IS NULL THEN RAISE EXCEPTION 'Invoice not found: %', p_invoice_id; END IF;
 
-  FOR r IN SELECT ii.item_id, ii.weight, ii.huid
+  FOR r IN SELECT ii.id AS inv_item_id, ii.item_id, ii.weight, ii.huid
   FROM invoice_items ii
   LEFT JOIN item_master im ON im.id = ii.item_id
   WHERE ii.invoice_id = p_invoice_id
     AND ii.item_id IS NOT NULL
     AND (im.material_type IS DISTINCT FROM 'gold_18k')
   LOOP
-    -- Skip if stock_ledger already has an OUT entry for this exact item+weight+huid (idempotent)
-    IF EXISTS (SELECT 1 FROM stock_ledger WHERE source_type = 'sale' AND reference_id = p_invoice_id AND item_id = r.item_id AND weight = r.weight AND huid IS NOT DISTINCT FROM r.huid) THEN
+    -- Skip if this invoice_item already produced an OUT ledger row (idempotent)
+    IF EXISTS (SELECT 1 FROM stock_ledger WHERE source_type = 'sale' AND reference_id = p_invoice_id AND invoice_item_id = r.inv_item_id) THEN
       CONTINUE;
     END IF;
 
@@ -470,21 +446,23 @@ BEGIN
     END IF;
   END LOOP;
 
-  INSERT INTO stock_ledger (item_id, weight, pcs, direction, source_type, reference_id, date, notes, huid)
+  INSERT INTO stock_ledger (item_id, weight, pcs, direction, source_type, reference_id, date, notes, huid, invoice_item_id)
   SELECT item_id, weight, 1, 'OUT', 'sale', p_invoice_id,
     (SELECT date FROM invoices WHERE id = p_invoice_id),
-    'Invoice ' || v_inv_no, huid
+    'Invoice ' || v_inv_no, huid, id
   FROM invoice_items WHERE invoice_id = p_invoice_id
     AND item_id IS NOT NULL
     AND item_id NOT IN (SELECT id FROM item_master WHERE material_type = 'gold_18k')
     AND NOT EXISTS (
       SELECT 1 FROM stock_ledger
-      WHERE source_type = 'sale' AND reference_id = p_invoice_id AND item_id = invoice_items.item_id AND weight = invoice_items.weight AND huid IS NOT DISTINCT FROM invoice_items.huid
+      WHERE source_type = 'sale' AND reference_id = p_invoice_id AND invoice_item_id = invoice_items.id
     );
 END;
 $$;
 
--- Reverse invoice stock: mark purchases/inward supply unsold + remove stock_ledger OUT
+-- Reverse invoice stock: release ONLY the purchase lots that were sold on this
+-- invoice (matched via sold_inv_no), newest lot first (reverse of FIFO).
+-- This prevents corrupting identical lots sold by a different invoice.
 CREATE OR REPLACE FUNCTION reverse_invoice_stock(p_invoice_id BIGINT)
 RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE
@@ -492,6 +470,7 @@ DECLARE
   v_inv_no TEXT;
 BEGIN
   SELECT inv_no INTO v_inv_no FROM invoices WHERE id = p_invoice_id;
+  IF v_inv_no IS NULL THEN RETURN; END IF;
 
   FOR r IN SELECT ii.item_id, ii.weight, ii.huid
   FROM invoice_items ii
@@ -508,11 +487,16 @@ BEGIN
           FROM unnest(string_to_array(sold_inv_no, ', ')) AS part
           WHERE part != v_inv_no
         )
-    WHERE item_id = r.item_id
-      AND sold_pcs > 0
-      AND weight = r.weight
-      AND huid IS NOT DISTINCT FROM r.huid;
-
+    WHERE id = (
+      SELECT id FROM purchases
+      WHERE item_id = r.item_id
+        AND weight = r.weight
+        AND huid IS NOT DISTINCT FROM r.huid
+        AND sold_pcs > 0
+        AND ',' || replace(sold_inv_no, ', ', ',') || ',' LIKE '%,' || v_inv_no || ',%'
+      ORDER BY id DESC
+      LIMIT 1
+    );
   END LOOP;
 
   DELETE FROM stock_ledger WHERE source_type = 'sale' AND reference_id = p_invoice_id;
@@ -535,6 +519,7 @@ BEGIN
 
   SELECT inv_no INTO v_inv_no FROM invoices WHERE id = p_invoice_id;
 
+  PERFORM reverse_material_sale(p_invoice_id);
   PERFORM reverse_invoice_stock(p_invoice_id);
   DELETE FROM invoice_items WHERE invoice_id = p_invoice_id;
   DELETE FROM invoices WHERE id = p_invoice_id;
@@ -680,8 +665,14 @@ DECLARE
   v_inv_no TEXT;
   v_avail NUMERIC;
   v_selling NUMERIC;
+  v_remaining_weight NUMERIC;
+  v_lot RECORD;
 BEGIN
   SELECT inv_no INTO v_inv_no FROM invoices WHERE id = p_invoice_id;
+
+  IF EXISTS (SELECT 1 FROM material_sales WHERE invoice_id = p_invoice_id) THEN
+    RETURN;
+  END IF;
 
   -- === Validate stock availability ===
 
@@ -712,43 +703,79 @@ BEGIN
   -- === Process 18K Gold ===
 
   INSERT INTO material_sales (type, invoice_id, invoice_no, description, weight, rate, amount)
-  SELECT 'gold_18k', p_invoice_id, v_inv_no, im.name, ii.weight, ii.rate_per_gram, ii.price
+  SELECT 'gold_18k', p_invoice_id, v_inv_no, COALESCE(im.name, ii.description_extra), ii.weight, ii.rate_per_gram, ii.price
   FROM invoice_items ii
-  JOIN item_master im ON im.id = ii.item_id
-  WHERE ii.invoice_id = p_invoice_id AND im.material_type = 'gold_18k';
+  LEFT JOIN item_master im ON im.id = ii.item_id
+  WHERE ii.invoice_id = p_invoice_id
+    AND (im.material_type = 'gold_18k' OR ii.material_type = 'gold_18k');
 
-  UPDATE material_purchases mp
-  SET sold_weight = sold_weight + sub.total_weight
-  FROM (
-    SELECT COALESCE(SUM(ii.weight), 0) as total_weight
+  -- Deduct gold_18k from purchases FIFO
+  BEGIN
+    SELECT COALESCE(SUM(ii.weight), 0) INTO v_remaining_weight
     FROM invoice_items ii
     LEFT JOIN item_master im ON im.id = ii.item_id
-    WHERE ii.invoice_id = p_invoice_id AND (im.material_type = 'gold_18k' OR ii.material_type = 'gold_18k')
-  ) sub
-  WHERE mp.type = 'gold_18k';
+    WHERE ii.invoice_id = p_invoice_id AND (im.material_type = 'gold_18k' OR ii.material_type = 'gold_18k');
+    FOR v_lot IN SELECT id, weight, sold_weight FROM material_purchases
+                 WHERE type = 'gold_18k' AND weight > sold_weight
+                 ORDER BY created_at ASC
+    LOOP
+      IF v_remaining_weight <= 0 THEN EXIT; END IF;
+      DECLARE
+        v_avail_weight NUMERIC := v_lot.weight - v_lot.sold_weight;
+        v_deduct NUMERIC := LEAST(v_avail_weight, v_remaining_weight);
+      BEGIN
+        UPDATE material_purchases SET sold_weight = sold_weight + v_deduct WHERE id = v_lot.id;
+        v_remaining_weight := v_remaining_weight - v_deduct;
+      END;
+    END LOOP;
+  END;
 
   -- === Process Silver items ===
+  -- NB: item_id IS NULL alone also matches standalone gold_18k lines, so the
+  -- type must be explicitly restricted to silver types to avoid double-counting.
 
   INSERT INTO material_sales (type, invoice_id, invoice_no, description, weight, rate, amount)
   SELECT ii.material_type, p_invoice_id, v_inv_no, ii.description_extra, ii.weight, ii.rate_per_gram, ii.price
   FROM invoice_items ii
-  WHERE ii.invoice_id = p_invoice_id AND ii.item_id IS NULL AND ii.material_type IS NOT NULL;
+  WHERE ii.invoice_id = p_invoice_id AND ii.item_id IS NULL AND ii.material_type IN ('silver_925', 'silver_ornaments');
 
-  UPDATE material_purchases mp
-  SET sold_weight = sold_weight + sub.total_weight
-  FROM (
-    SELECT COALESCE(SUM(weight), 0) as total_weight FROM invoice_items
-    WHERE invoice_id = p_invoice_id AND material_type = 'silver_925'
-  ) sub
-  WHERE mp.type = 'silver_925';
+  -- Deduct silver_925 from purchases FIFO
+  BEGIN
+    SELECT COALESCE(SUM(weight), 0) INTO v_remaining_weight
+    FROM invoice_items WHERE invoice_id = p_invoice_id AND material_type = 'silver_925';
+    FOR v_lot IN SELECT id, weight, sold_weight FROM material_purchases
+                 WHERE type = 'silver_925' AND weight > sold_weight
+                 ORDER BY created_at ASC
+    LOOP
+      IF v_remaining_weight <= 0 THEN EXIT; END IF;
+      DECLARE
+        v_avail_weight NUMERIC := v_lot.weight - v_lot.sold_weight;
+        v_deduct NUMERIC := LEAST(v_avail_weight, v_remaining_weight);
+      BEGIN
+        UPDATE material_purchases SET sold_weight = sold_weight + v_deduct WHERE id = v_lot.id;
+        v_remaining_weight := v_remaining_weight - v_deduct;
+      END;
+    END LOOP;
+  END;
 
-  UPDATE material_purchases mp
-  SET sold_weight = sold_weight + sub.total_weight
-  FROM (
-    SELECT COALESCE(SUM(weight), 0) as total_weight FROM invoice_items
-    WHERE invoice_id = p_invoice_id AND material_type = 'silver_ornaments'
-  ) sub
-  WHERE mp.type = 'silver_ornaments';
+  -- Deduct silver_ornaments from purchases FIFO
+  BEGIN
+    SELECT COALESCE(SUM(weight), 0) INTO v_remaining_weight
+    FROM invoice_items WHERE invoice_id = p_invoice_id AND material_type = 'silver_ornaments';
+    FOR v_lot IN SELECT id, weight, sold_weight FROM material_purchases
+                 WHERE type = 'silver_ornaments' AND weight > sold_weight
+                 ORDER BY created_at ASC
+    LOOP
+      IF v_remaining_weight <= 0 THEN EXIT; END IF;
+      DECLARE
+        v_avail_weight NUMERIC := v_lot.weight - v_lot.sold_weight;
+        v_deduct NUMERIC := LEAST(v_avail_weight, v_remaining_weight);
+      BEGIN
+        UPDATE material_purchases SET sold_weight = sold_weight + v_deduct WHERE id = v_lot.id;
+        v_remaining_weight := v_remaining_weight - v_deduct;
+      END;
+    END LOOP;
+  END;
 END;
 $$;
 
@@ -757,27 +784,33 @@ $$;
 DROP FUNCTION IF EXISTS reverse_material_sale(bigint);
 CREATE OR REPLACE FUNCTION reverse_material_sale(p_invoice_id BIGINT)
 RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_type TEXT;
+  v_remaining NUMERIC;
+  v_lot RECORD;
 BEGIN
-  -- Reverse sold_weight for 18K items
-  UPDATE material_purchases mp
-  SET sold_weight = GREATEST(0, sold_weight - sub.weight)
-  FROM (
-    SELECT COALESCE(SUM(weight), 0) as weight
-    FROM material_sales
-    WHERE invoice_id = p_invoice_id AND type = 'gold_18k'
-  ) sub
-  WHERE mp.type = 'gold_18k';
+  -- Release sold_weight per type using reverse-FIFO (newest lot first),
+  -- capped at each lot's actual sold_weight. This avoids wiping other
+  -- invoices' consumption when multiple lots share a type.
+  FOR v_type IN SELECT unnest(ARRAY['gold_18k', 'silver_925', 'silver_ornaments']) LOOP
+    SELECT COALESCE(SUM(weight), 0) INTO v_remaining
+    FROM material_sales WHERE invoice_id = p_invoice_id AND type = v_type;
 
-  -- Reverse sold_weight for silver items
-  UPDATE material_purchases mp
-  SET sold_weight = GREATEST(0, sold_weight - sub.weight)
-  FROM (
-    SELECT type, COALESCE(SUM(weight), 0) as weight
-    FROM material_sales
-    WHERE invoice_id = p_invoice_id AND type IN ('silver_925', 'silver_ornaments')
-    GROUP BY type
-  ) sub
-  WHERE mp.type = sub.type;
+    IF v_remaining > 0 THEN
+      FOR v_lot IN SELECT id, sold_weight FROM material_purchases
+                   WHERE type = v_type AND sold_weight > 0
+                   ORDER BY id DESC
+      LOOP
+        IF v_remaining <= 0 THEN EXIT; END IF;
+        DECLARE
+          v_deduct NUMERIC := LEAST(v_lot.sold_weight, v_remaining);
+        BEGIN
+          UPDATE material_purchases SET sold_weight = sold_weight - v_deduct WHERE id = v_lot.id;
+          v_remaining := v_remaining - v_deduct;
+        END;
+      END LOOP;
+    END IF;
+  END LOOP;
 
   -- Delete material_sales for this invoice
   DELETE FROM material_sales WHERE invoice_id = p_invoice_id;
@@ -923,7 +956,11 @@ CREATE POLICY inward_supply_write ON inward_supply_vouchers FOR INSERT WITH CHEC
 CREATE POLICY inward_supply_update ON inward_supply_vouchers FOR UPDATE USING (
   has_permission('allow_billing')
 );
+-- Needed for the edit flow which replaces a voucher's rows (insert new, delete old)
 DROP POLICY IF EXISTS inward_supply_delete ON inward_supply_vouchers;
+CREATE POLICY inward_supply_delete ON inward_supply_vouchers FOR DELETE USING (
+  has_permission('allow_billing')
+);
 
 -- Invoices: read/write/update/delete for allow_billing
 CREATE POLICY invoices_read ON invoices FOR SELECT USING (
@@ -1043,3 +1080,20 @@ DROP POLICY IF EXISTS material_sales_delete ON material_sales;
 CREATE POLICY material_sales_delete ON material_sales FOR DELETE USING (
   has_permission('allow_billing')
 );
+
+-- ─── CHECK CONSTRAINTS ────────────────────────────────
+-- PostgreSQL has no ADD CONSTRAINT IF NOT EXISTS, so drop-then-add keeps
+-- schema.sql idempotent on re-runs.
+
+ALTER TABLE invoice_items DROP CONSTRAINT IF EXISTS chk_weight_positive;
+ALTER TABLE invoice_items ADD CONSTRAINT chk_weight_positive CHECK (weight > 0);
+ALTER TABLE invoice_items DROP CONSTRAINT IF EXISTS chk_rate_positive;
+ALTER TABLE invoice_items ADD CONSTRAINT chk_rate_positive CHECK (rate_per_gram >= 0);
+ALTER TABLE purchases DROP CONSTRAINT IF EXISTS chk_purch_weight_positive;
+ALTER TABLE purchases ADD CONSTRAINT chk_purch_weight_positive CHECK (weight > 0);
+ALTER TABLE purchases DROP CONSTRAINT IF EXISTS chk_pcs_positive;
+ALTER TABLE purchases ADD CONSTRAINT chk_pcs_positive CHECK (pcs > 0);
+ALTER TABLE material_purchases DROP CONSTRAINT IF EXISTS chk_mp_weight_positive;
+ALTER TABLE material_purchases ADD CONSTRAINT chk_mp_weight_positive CHECK (weight > 0);
+ALTER TABLE material_sales DROP CONSTRAINT IF EXISTS chk_ms_weight_positive;
+ALTER TABLE material_sales ADD CONSTRAINT chk_ms_weight_positive CHECK (weight > 0);

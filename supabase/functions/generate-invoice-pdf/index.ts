@@ -40,6 +40,15 @@ function stateCode(name: string): string {
   return STATE_CODES[name.toLowerCase().trim()] || '00'
 }
 
+function wordsBelow1000(n: number): string {
+  const ones = ['','One ','Two ','Three ','Four ','Five ','Six ','Seven ','Eight ','Nine ','Ten ',
+    'Eleven ','Twelve ','Thirteen ','Fourteen ','Fifteen ','Sixteen ','Seventeen ','Eighteen ','Nineteen ']
+  const tens = ['','','Twenty ','Thirty ','Forty ','Fifty ','Sixty ','Seventy ','Eighty ','Ninety ']
+  if (n < 20) return ones[n]
+  if (n < 100) return tens[Math.floor(n / 10)] + ones[n % 10]
+  return ones[Math.floor(n / 100)] + 'Hundred ' + (n % 100 > 0 ? wordsBelow1000(n % 100) : '')
+}
+
 // Indian number to words (Lakh/Crore system)
 function amountInWords(n: number): string {
   if (n <= 0) return 'Zero Only'
@@ -128,7 +137,7 @@ function buildHtml(inv: Invoice, items: InvItem[], diamonds: DiamondItem[], cust
   function hsnRows() {
     const hsnMap = new Map<string, { taxable: number; tax: number }>()
     for (const it of items) {
-      const hsn = it.item_master?.hsn_code || '71131913'
+      const hsn = it.material_type === 'silver_925' || it.material_type === 'silver_ornaments' ? '71131130' : it.material_type === 'gold_18k' ? '71131913' : it.item_master?.hsn_code || '71131913'
       const existing = hsnMap.get(hsn) || { taxable: 0, tax: 0 }
       existing.taxable += Number(it.price)
       existing.tax += Number(it.tax_amount)
@@ -164,8 +173,7 @@ function buildHtml(inv: Invoice, items: InvItem[], diamonds: DiamondItem[], cust
     const b = Number(inv.bank_amt)
     const lines: string[] = []
     if (c > 0) lines.push(`Cash: &#8377;${fmt(c)}`)
-    if (b > 0) lines.push(`Bank: &#8377;${fmt(b)}`)
-    lines.push(`E-Banking: &#8377;${fmt(0)}`)
+    if (b > 0) lines.push(`E-Banking: &#8377;${fmt(b)}`)
     return lines.join('<br>')
   }
 
@@ -176,7 +184,7 @@ function buildHtml(inv: Invoice, items: InvItem[], diamonds: DiamondItem[], cust
 <tr class="datarow">
   <td class="c">${i + 1}</td>
   <td><span class="b">${itemDesc(it)}</span></td>
-  <td class="c">${isSilver || isGold18k ? '—' : esc(it.item_master?.hsn_code || '')}</td>
+  <td class="c">${isSilver ? '71131130' : isGold18k ? '71131913' : esc(it.item_master?.hsn_code || '')}</td>
   <td class="r" style="white-space: nowrap;">${fmtWt(it.weight)} gm</td>
   <td class="r">${isSilver ? '&#8377;' + fmt(it.rate_per_gram) : '&#8377;' + fmt(it.rate_per_gram)}</td>
   <td class="r b">&#8377;${fmt(it.price)}</td>
@@ -186,7 +194,7 @@ function buildHtml(inv: Invoice, items: InvItem[], diamonds: DiamondItem[], cust
 <tr class="datarow">
   <td class="c">${items.length + i + 1}</td>
   <td><span class="b">Diamond${d.code ? ' (' + esc(d.code) + ')' : ''}</span><br><span class="sm">${esc(d.description || '')}</span></td>
-  <td class="c">â€”</td>
+  <td class="c">&mdash;</td>
   <td class="r" style="white-space: nowrap;">${fmtWt(d.weight)} gm</td>
   <td class="r">&#8377;${fmt(d.mrp)}</td>
   <td class="r b">&#8377;${fmt(d.mrp)}</td>
@@ -313,6 +321,7 @@ th { background: #ddd; font-weight: 700; text-align: center; white-space: nowrap
       <tr><td class="l b">${esc(adjInvNo || '')}</td><td class="l"></td></tr>
       <tr><td class="l rl">Adj. Amount</td><td class="l rl"></td></tr>
       <tr><td class="l"></td><td class="r b">(-)&#8377;${fmt(inv.adj_amount)}</td></tr>` : ''}
+      <tr><td class="l rl">Gold Rate</td><td class="l b">₹${fmt(Number(inv.gold_rate) || 0)}/10gm</td></tr>
     </table>
   </td>
 </tr>
@@ -483,6 +492,8 @@ serve(async (req) => {
       headers: { 'Content-Type': 'text/html; charset=utf-8', ...CORS_HEADERS },
     })
   } catch (_err: any) {
-    return new Response('Failed to generate invoice PDF', { status: 500, headers: CORS_HEADERS })
+    const msg = _err?.message || _err?.toString() || 'Unknown error'
+    console.error('generate-invoice-pdf error:', msg)
+    return new Response(msg, { status: 500, headers: CORS_HEADERS })
   }
 })

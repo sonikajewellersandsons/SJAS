@@ -108,7 +108,7 @@ function isActive(path) {
               <span className="sidebar-user-role">{profile?.role}</span>
             </div>
           </div>
-          <button className="sidebar-logout" onClick={() => signOut()} title="Sign Out">
+          <button className="sidebar-logout" onClick={async () => { try { await signOut() } catch(e) { console.error(e) } }} title="Sign Out">
             <LogOut size={16} />
           </button>
         </div>

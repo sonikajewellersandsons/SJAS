@@ -33,14 +33,14 @@ function RateCard({ label, total, gold, gst, color }) {
 }
 
 export default function PriceCalculatorPage() {
-  const [rateInput, setRateInput] = useState(() => localStorage.getItem('pc_goldRate') || '')
+  const [rateInput, setRateInput] = useState(() => { try { return localStorage.getItem('pc_goldRate') || '' } catch { return '' } })
   const [weight, setWeight] = useState('10')
   const [purity, setPurity] = useState('916')
   const [labourPct, setLabourPct] = useState('10')
   const [hallmarkCharge, setHallmarkCharge] = useState('45')
 
   useEffect(() => {
-    localStorage.setItem('pc_goldRate', rateInput)
+    try { localStorage.setItem('pc_goldRate', rateInput) } catch {}
   }, [rateInput])
 
   const goldRateTotal = useMemo(() => {
@@ -68,7 +68,7 @@ export default function PriceCalculatorPage() {
     if (!goldRateExclGst || w <= 0) return null
     const ratePerGram = goldRateExclGst / 10
     const purityFactor = parseInt(purity) / 999
-    const lp = parseFloat(labourPct) || 0
+    const lp = Math.max(0, parseFloat(labourPct) || 0)
     const goldValue = Math.round(w * ratePerGram * purityFactor * 100) / 100
     const labour = Math.round(goldValue * lp / 100 * 100) / 100
     const subtotal = goldValue + labour
@@ -95,7 +95,8 @@ export default function PriceCalculatorPage() {
 
   function handleRateBlur() {
     if (goldRateTotal) {
-      setRateInput(goldRateTotal.toLocaleString('en-IN'))
+      const formatted = goldRateTotal.toLocaleString('en-IN')
+      if (rateInput !== formatted) setRateInput(formatted)
     }
   }
 
@@ -135,9 +136,7 @@ export default function PriceCalculatorPage() {
       </div>
 
       <div className="stats-grid">
-        {cards.map(card => (
-          <RateCard key={card.label} {...card} />
-        ))}
+        {goldRateTotal ? cards.map(card => (<RateCard key={card.label} {...card} />)) : <p className="text-muted" style={{ textAlign: 'center', padding: '1rem' }}>Enter 24K gold rate above to see rate breakdown</p>}
       </div>
 
       <div className="card" style={{ marginTop: '1rem' }}>
@@ -187,7 +186,7 @@ export default function PriceCalculatorPage() {
                 </div>
                 <div>
                   <div className="text-xs text-muted">Purity</div>
-                  <div className="font-bold">{result.purity}/999 ({purityOptions.find(p => p.value === purity)?.label || ''})</div>
+                  <div className="font-bold">{result.purity}/999 ({purityOptions.find(p => p.value === purity)?.label || purity})</div>
                 </div>
                 <div>
                   <div className="text-xs text-muted">Gold Rate /g</div>

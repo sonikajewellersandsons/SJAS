@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useToast } from '../components/Toast'
 import ComboBox from '../components/ComboBox'
+import { logAction } from '../lib/audit'
 import { Plus, Search, X, Edit2, Trash2 } from 'lucide-react'
 
 export default function CustomersPage() {
@@ -14,6 +15,7 @@ export default function CustomersPage() {
   const [form, setForm] = useState({ name: '', address: '', phone: '', state: 'Haryana', aadhaar: '', pan: '', pincode: '', gstin: '' })
   const [confirmDelete, setConfirmDelete] = useState(null)
   const [deleting, setDeleting] = useState(false)
+  const [saving, setSaving] = useState(false)
 
   useEffect(() => { loadCustomers() }, [])
 
@@ -41,22 +43,25 @@ export default function CustomersPage() {
 
   async function saveCustomer(e) {
     e.preventDefault()
-    if (!form.name.trim()) { addToast('Customer name is required', 'error'); return }
-    if (!form.phone.trim()) { addToast('Phone is required', 'error'); return }
+    setSaving(true)
+    if (!form.name.trim()) { addToast('Customer name is required', 'error'); setSaving(false); return }
+    if (!form.phone.trim()) { addToast('Phone is required', 'error'); setSaving(false); return }
     const cleanedPhone = form.phone.trim().replace(/^\+91\s*/, '').replace(/\D/g, '')
-    if (cleanedPhone.length !== 10) { addToast('Phone must be exactly 10 digits', 'error'); return }
-    if (!form.address.trim()) { addToast('Address is required', 'error'); return }
-    const payload = { ...form, name: form.name.trim(), phone: cleanedPhone }
+    if (cleanedPhone.length !== 10) { addToast('Phone must be exactly 10 digits', 'error'); setSaving(false); return }
+    if (!form.address.trim()) { addToast('Address is required', 'error'); setSaving(false); return }
+    const payload = { ...form, name: form.name.trim(), phone: cleanedPhone, gstin: form.gstin.trim().toUpperCase() }
     if (editing) {
       const { error } = await supabase.from('customers').update(payload).eq('id', editing)
-      if (error) { addToast(error.message, 'error'); return }
+      if (error) { addToast(error.message, 'error'); setSaving(false); return }
       addToast('Customer updated', 'success')
+      logAction('customer_updated', 'customers', editing, { name: payload.name, phone: payload.phone })
     } else {
       const { error } = await supabase.from('customers').insert(payload)
-      if (error) { addToast(error.message, 'error'); return }
+      if (error) { addToast(error.message, 'error'); setSaving(false); return }
       addToast('Customer added', 'success')
+      logAction('customer_created', 'customers', null, { name: payload.name, phone: payload.phone })
     }
-    resetForm(); loadCustomers()
+    setSaving(false); resetForm(); loadCustomers()
   }
 
   async function deleteCustomer(id, name) {
@@ -75,6 +80,7 @@ export default function CustomersPage() {
       return
     }
     addToast('Customer deleted', 'success')
+    logAction('customer_deleted', 'customers', id, { name })
     setDeleting(false)
     setConfirmDelete(null)
     loadCustomers()
@@ -216,7 +222,7 @@ export default function CustomersPage() {
               <div className="form-row">
                 <div className="form-group full">
                   <label className="label">Address</label>
-                  <textarea className="input" value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} rows={2} />
+                  <textarea className="input" value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} rows={2} maxLength={500} />
                 </div>
               </div>
               <div className="form-row three">
@@ -239,7 +245,7 @@ export default function CustomersPage() {
               </div>
               <div className="flex gap-1" style={{ justifyContent: 'flex-end', marginTop: '1rem' }}>
                 <button type="button" className="btn btn-outline" onClick={resetForm}>Cancel</button>
-                <button type="submit" className="btn btn-primary">{editing ? 'Update' : 'Add'}</button>
+                <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Saving...' : (editing ? 'Update' : 'Add')}</button>
               </div>
             </form>
           </div>

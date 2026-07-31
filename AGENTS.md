@@ -211,22 +211,145 @@ Add 18K Gold (weight-only stock) and Silver (Quick Silver line items) modules �
 - **Created `.github/workflows/deploy.yml`** — CI/CD build on push/PR.
 - **Route-level error boundaries** — each route in App.jsx wrapped with `RouteErrorBoundary`.
 
-### Pending / Not Yet Built
-- (none currently tracked)
+### Completed (August 2026 — Comprehensive Bugfix Audit)
+
+### Fixed (August 2026 — Comprehensive Bugfix Pass)
+All 12 Critical, ~20 High, ~23 Medium, and ~12 Low bugs found in full audit fixed. Build verified (`npm run build` succeeds).
+
+**Schema.sql fixes:**
+- **C3**: `process_material_sale` idempotency — skip if already processed
+- **C10**: `delete_invoice` now calls `reverse_material_sale` (silver/18K stock lost on deletion)
+- **C11**: `material_sales` INSERT uses `LEFT JOIN` + `COALESCE(im.name, ii.description_extra)` for standalone items
+- **C12**: FIFO per-lot sold_weight updates instead of bulk per-type update
+- **M7**: `get_stock_lots` limited to 500 rows
+- **M8**: CHECK constraints for positive weight/rate on invoice_items/purchases/material tables
+- **M9**: `active = true` filter removed from `get_stock_balance`
+
+**BillingPage (12 fixes):**
+- **C1**: `cleanedPhone` lifted outside `if` block for new customers with no phone
+- **C2**: `reversed` flag set immediately after each reversal step
+- **C4**: Edit mode: INSERT new items first, DELETE old items second (atomicity)
+- **H1**: Negative weight validation (`w <= 0`)
+- **H2**: Negative labour% validation
+- **H3/H4**: `allStockAvailable` null check (`stockResults[i] === null`)
+- **H5**: Discount exceeding total price validation
+- **M1**: Recovery query uses `item_master!left`
+- **M2**: `updateLine` clears `silver_type` on item_id change
+- **M3**: `Promise.all` → `Promise.allSettled` in loadData
+- **M4**: `resetForm` now `async` with `await generateInvNo()`
+- **M5**: GSTIN uppercased on save
+
+**Other pages (20+ fixes):**
+- **C5**: PDF edge function — added missing `wordsBelow1000()` helper
+- **C6/C7**: SettingsPage — `bank_details` null guard, permissions try/catch
+- **C8/C9**: App.jsx/ProfilePage — signOut try/catch + await
+- **H6**: SalesPage — `!inner` → `!left` joins, orphan item fallback
+- **H7**: StockPage — `!inner` → `!left` joins, phone cleaning
+- **H8**: ReportsPage — shop state JSON.parse with try/catch (2 occurrences)
+- **H9**: ReportsPage — HSN/Category `!inner` → `!left` joins
+- **H10**: InwardSupplyPage — `!inner` → `!left` joins, deleted item fallback
+- **H11**: MaterialPage — `parseFloat(p.sold_weight ?? 0)` NaN guard
+- **H12**: MaterialPage — edit btn disabled with null sold_weight
+- **H13**: PriceCalcPage — localStorage wrapped in try/catch
+- **H14**: PriceCalcPage — `Math.max(0, labour%)` clamp
+- **H15**: InvoiceModal — `round_off != null` guard
+- **H16**: InvoiceModal — `labour_pct ?? 10` (shows 0% when 0)
+- **H17**: AuthContext — confirmed no duplicate `fetchProfile`
+- **H18/M22**: DashboardPage — `Promise.all` → `Promise.allSettled` per-result
+- **H20**: CustomersPage — phone cleaned, GSTIN uppercased
+- **M10/M11**: InwardSupplyPage — insert-then-delete order, `lineTotals[idx]` index
+- **M12**: CustomersPage — GSTIN `.toUpperCase()`
+- **M14**: InvoiceHistoryPage — `for` loop replaces `.reduce()` for perf
+- **M15**: SalesPage — orphan items note
+- **M16**: ReportsPage — `.catch()` on drill-down promise
+- **M17**: ReportsPage — toast on query error
+- **M18**: ReportsPage — hallmark tax clamp `Math.max(0, ...)`
+- **M19/M20**: ComboBox — ArrowDown no-op on empty, Enter free-text fallback
+- **M21**: LoginPage — `setError('')` at top of handleSubmit (already existed)
+- **M23**: PDF — correct HSN codes for silver (`71131130`) and 18K (`71131913`)
+- **LOW**: 12+ small fixes across all files (fallback displays, loading states, gold rate row in PDF, address maxLength, etc.)
 
 ### Completed (August 2026 — Price Calculator)
 - **Price Calculator page** (`/price-calculator`): live RCPL gold rates fetched from rohtakchain.com via Supabase Edge Function, auto-refreshes every 5 min, 3 top cards (RCPL Gold 999, 22K, 18K), all-rates table, gold price calculator with purity selector
 - **Edge Function** (`fetch-rcpl-rate`): fetches HTML from rohtakchain.com/live-rates, parses all `.live-rate-row` blocks into structured data, returns JSON with CORS headers, errors returned gracefully as 200 with error field
 - **BillingPage Gold 18K button**: "Add Gold 18K" button adjacent to "Add Silver" with standalone line items (item_id=null, material_type='gold_18k'), stock check against material_purchases, labour % editable, rate = goldRate/10 × 18/22, DB function updated to handle item_id=null gold_18k items
 
-### Relevant Files
-- `sql/schema.sql`: `material_purchases`, `material_sales`, `process_material_sale`, `reverse_material_sale`, `item_master.material_type`, seed 18K items, RLS policies
-- `src/pages/BillingPage.jsx`: `addSilverLine`, `addGold18kLine`, silver/gold 18K standalone line items, stock check, save/edit/render
-- `src/pages/MaterialPage.jsx`: purchase form, stock card, purchase/sale history (3 tabs)
-- `src/pages/PriceCalculatorPage.jsx`: RCPL live rates, gold calculator, auto-refresh
-- `supabase/functions/fetch-rcpl-rate/index.ts`: Edge Function to fetch/parse rohtakchain.com live rates
-- `src/pages/SalesPage.jsx`: Materials tab with material_sales table
-- `src/App.jsx`: `/materials`, `/price-calculator` routes + sidebar nav items
-- `src/index.css`: `.badge-silver`
-- `src/components/InvoiceModal.jsx`: gold_18k support in receipt modal
-- `supabase/functions/generate-invoice-pdf/index.ts`: silver + gold_18k support in PDF generation
+## Current Work Session (Aug 2026 — Performance & Edit-Mode Stock Fixes)
+
+### Objective
+Fix BillingPage performance (slow load/re-render), edit-mode stock validation for silver/gold 18K, PDF HSN display, and last-round audit bugs.
+
+### Completed
+
+**BillingPage Performance (6 fixes):**
+- **Customers query**: Added `.limit(1000)` + column selection instead of `*` — was loading ALL customers
+- **`generateInvNo`**: Eliminated full invoice number scan (`ilike 'SJS/…'`) — now uses single `inv_sequences` lookup
+- **`filteredCustomers`**: Wrapped in `useMemo` — was filtering full array on every render
+- **`stockLotsByName` Map**: Pre-indexed stock lots by name for O(1) lookup in `checkStock` and `getFilteredLots`
+- **All derived calculations** (`linePrices`, `lineTotals`, `stockResults`, totals): Wrapped in single `useMemo`
+- **`getFilteredLots`**: Switched from `stockLots.filter(...)` to `stockLotsByName[name].filter(...)`
+
+**Edit-Mode Stock Validation (`checkStock` rewrite):**
+- **Silver**: Edit-mode delta check — same/reduced weight skips, increased weight checks `(new - orig) <= currentStock`, different `silver_type` does full check
+- **Gold 18K**: Same delta-based edit-mode bypass
+- **Regular items**: Added weight-decreased bypass (was falling through to normal check), kept existing exact-match and weight-increased fallthrough
+
+**PDF Edge Function:**
+- Exposed real error message in 500 response (was swallowing with generic text)
+- Deployed with `npx supabase functions deploy generate-invoice-pdf` — fixes `wordsBelow1000` ReferenceError on live
+- Fixed HSN/SAC column for silver (`71131130`) and gold 18K (`71131913`) — was showing `—` in line item rows
+
+**Audit Bugfixes (Aug 2026 pass 2):**
+- **InvoiceHistoryPage:66** — `setConfirmDelete(null)` ran before error check (modal dismissed on RPC failure)
+- **InwardSupplyPage:210** — `lineTotals[idx]` used filtered `validLines` index instead of `lineItems.indexOf(line)` (wrong totals)
+- **InwardSupplyPage:73** — Added missing `metalRes.error` toast
+- **MaterialPage:80** — Negative weight allowed (`<= 0` check added)
+- **MaterialPage:62-71** — Added per-query `.error` checks with toasts
+- **InvoiceModal:26** — `hallmarkTax` NaN when `tax_total` null (`Math.max(0, ...)`)
+
+### Pending / Not Yet Built
+- (none currently tracked)
+
+## Fixed (July 2026 — Logic Break Audit, full pass)
+
+**schema.sql — CRITICAL:**
+- **Inward supply edit was broken** — `inward_supply_delete` RLS policy was dropped and never recreated, so the edit flow's `delete()` was a silent no-op → every edit duplicated voucher rows. Policy re-added (`allow_billing`).
+- **`process_material_sale` double-inserted standalone 18K gold** — the silver INSERT (`item_id IS NULL AND material_type IS NOT NULL`) also matched `gold_18k` lines already inserted by the 18K INSERT. Now restricted to `IN ('silver_925','silver_ornaments')`.
+- **`reverse_material_sale` over-reversed `sold_weight`** — subtracted the full invoice weight from *every* lot of the type, wiping other invoices' consumption. Rewritten as reverse-FIFO (newest lot first, capped per lot).
+- **`reverse_invoice_stock` decremented ALL identical lots** — now only touches lots actually sold on the invoice (matched via `sold_inv_no`), newest first.
+- **`process_invoice_stock` ledger idempotency** — keyed on new `stock_ledger.invoice_item_id` so two identical lines each get their own OUT row (was keyed on item+weight+huid, skipping the 2nd).
+
+**schema.sql — minor:**
+- `shop_state`/`shop_city` seed defaults changed to `Haryana`/`Faridabad`.
+- Dropped unused RPCs `get_next_inv_no`, `peek_next_inv_no` (superseded by client-side gap detection).
+
+**BillingPage.jsx:**
+- **Silver/18K stock checks now aggregate across all lines** (`silverNet`/`goldNet` in the totals memo) — two lines can no longer jointly exceed stock and fail only at the DB layer.
+- **Edit-original matching is now content-based** (`findOrig`) instead of positional, so adding/removing/reordering lines during an edit validates correctly.
+- 18K line with **0% labour** is preserved on edit (was coerced back to 10%).
+- Invoice now **stores `customer_gstin`** (PDF no longer depends on a live customer lookup).
+- **`settings.gold_rate` fallback** added — billing auto-fills last saved rate when the calculator was never used.
+- Customer phone search normalizes `+91` / non-digits.
+
+**ReportsPage.jsx:** HSN summary & category report map standalone silver (`71131130`) and 18K (`71131913`) instead of lumping them under OTHER.
+
+**Dead code removed:** `api/fetch-rcpl-rate.js`, `supabase/functions/fetch-rcpl-rate/`, the RCPL dev middleware in `vite.config.js`, and the `/api/(.*)` rewrite in `vercel.json`. Price Calculator remains manual input only.
+
+**PDF (`generate-invoice-pdf`):** fixed em-dash mojibake on diamond rows; payment summary no longer prints a redundant `E-Banking ₹0.00` line.
+
+**Repair script (`sql/repair.sql`):** ONE-TIME rebuild of `material_sales`, `material_purchases.sold_weight`, `purchases.sold_pcs/sold_inv_no`, and `stock_ledger` sale rows from invoices in chronological order. Run after `schema.sql`.
+
+## Added (August 2026 — Audit Trail + Invoice Number Collision)
+
+**Audit trail (`logs` table now actually written):**
+- `src/lib/audit.js` — `logAction(action, table_name, record_id, details, userId?)` fire-and-forget helper (never throws, resolves `users.id` from the auth session, caches it).
+- Wired into: login/logout (`AuthContext`), invoice create/update (`BillingPage`) & delete (`InvoiceHistoryPage`), inward voucher create/update/delete (`InwardSupplyPage`), purchase + item-master actions (`StockPage`), customer CRUD (`CustomersPage`), material purchase CRUD (`MaterialPage`), settings/bank/user-role/toggle (`SettingsPage`).
+- **Activity Log viewer** added as a 5th tab in Settings (owner-only) — lists latest 300 entries with timestamp, user name, action label, and details.
+
+**Invoice number collision:**
+- `BillingPage` — `invNoTaken()` pre-check before any stock reversal; on conflict it shows an error, regenerates a fresh number, and aborts (no state corruption). A last-resort `23505` handler in the catch regenerates the number if a race slips through.
+- `InwardSupplyPage` — create-mode duplicate check before insert.
+
+**Inward supply voucher fix (critical):**
+- `inward_supply_vouchers.inv_no` had a `UNIQUE` constraint that contradicted the multi-row design (one voucher = one row per line item). Dropped it (idempotent `DROP CONSTRAINT IF EXISTS` + regular index).
+- Edit flow reordered to **delete old rows first, then insert new** — the previous insert-then-delete either failed on the unique key or deleted the just-inserted rows (same `inv_no`).

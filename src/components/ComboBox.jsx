@@ -54,17 +54,23 @@ export default function ComboBox({ options, value, onChange, placeholder = 'Sele
     }
     if (e.key === 'ArrowDown') {
       e.preventDefault()
+      if (filtered.length === 0) return
       setHighlightIdx(i => Math.min(i + 1, filtered.length - 1))
     }
     if (e.key === 'ArrowUp') {
       e.preventDefault()
-      setHighlightIdx(i => Math.max(i - 1, 0))
+      if (filtered.length === 0) return
+      setHighlightIdx(i => i <= 0 ? filtered.length - 1 : i - 1)
     }
     if (e.key === 'Enter') {
       if (filtered.length === 1) {
         handleSelect(filtered[0])
       } else if (highlightIdx >= 0 && highlightIdx < filtered.length) {
         handleSelect(filtered[highlightIdx])
+      } else {
+        onChange(search)
+        setOpen(false)
+        setSearch('')
       }
     }
   }

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useToast } from '../components/Toast'
 import InvoiceModal from '../components/InvoiceModal'
+import { logAction } from '../lib/audit'
 import { Receipt, Search, Eye, Printer, Trash2, Table2, Edit3 } from 'lucide-react'
 
 const FUNCTIONS_URL = import.meta.env.VITE_SUPABASE_URL + '/functions/v1'
@@ -63,12 +64,13 @@ export default function InvoiceHistoryPage() {
     setDeleting(true)
     const { error } = await supabase.rpc('delete_invoice', { p_invoice_id: confirmDelete.id })
     setDeleting(false)
-    setConfirmDelete(null)
     if (error) {
       addToast(error.message, 'error')
       return
     }
+    setConfirmDelete(null)
     addToast(`Invoice ${confirmDelete.invNo} deleted`, 'success')
+    logAction('invoice_deleted', 'invoices', confirmDelete.id, { inv_no: confirmDelete.invNo })
     loadInvoices()
   }
 
@@ -123,7 +125,11 @@ export default function InvoiceHistoryPage() {
     )
   })
 
-  const lastInvoiceId = invoices.length > 0 ? invoices.reduce((max, i) => Math.max(max, i.id), 0) : null
+  let lastId = 0
+  for (const inv of invoices) {
+    if (inv.id > lastId) lastId = inv.id
+  }
+  const lastInvoiceId = invoices.length > 0 ? lastId : null
 
   if (loading) {
     return (
@@ -189,7 +195,7 @@ export default function InvoiceHistoryPage() {
                 <tr key={inv.id}>
                   <td className="text-xs text-muted">{i + 1}</td>
                   <td style={{ fontWeight: 600 }}>{inv.inv_no}</td>
-                  <td>{inv.date}</td>
+                  <td>{inv.date && inv.date.split('T')[0]}</td>
                   <td>{inv.customer_name}</td>
                   <td className="font-mono">{inv.customer_phone || ''}</td>
                   <td className="text-xs" style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{inv.customer_address || ''}</td>
@@ -234,7 +240,7 @@ export default function InvoiceHistoryPage() {
               <tr key={inv.id}>
                 <td className="text-xs text-muted">{i + 1}</td>
                 <td><span className="font-mono" style={{ fontWeight: 600, color: 'var(--accent)' }}>{inv.inv_no}</span></td>
-                <td className="text-sm text-secondary">{inv.date}</td>
+                <td className="text-sm text-secondary">{inv.date && inv.date.split('T')[0]}</td>
                 <td style={{ fontWeight: 600 }}>{inv.customer_name}</td>
                 <td className="font-mono text-sm">{inv.customer_phone || '—'}</td>
                 <td className="font-mono" style={{ fontWeight: 700 }}>{fmt(inv.grand_total)}</td>
@@ -288,7 +294,7 @@ export default function InvoiceHistoryPage() {
               <button className="modal-close" onClick={handleCancelDelete}>&times;</button>
             </div>
             <p style={{ marginBottom: '1.5rem', lineHeight: 1.6 }}>
-              Delete invoice <strong>{confirmDelete.invNo}</strong>? This cannot be undone.
+              Delete invoice <strong>{confirmDelete.invNo}</strong>? Only the last invoice can be deleted. This cannot be undone.
             </p>
             <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
               <button className="btn btn-outline" onClick={handleCancelDelete} disabled={deleting}>Cancel</button>
