@@ -30,7 +30,7 @@ const STATE_CODES: Record<string, string> = {
   'nagaland': '13', 'manipur': '14', 'mizoram': '15', 'tripura': '16',
   'meghalaya': '17', 'assam': '18', 'west bengal': '19', 'jharkhand': '20',
   'odisha': '21', 'chhattisgarh': '22', 'madhya pradesh': '23', 'gujarat': '24',
-  'daman & diu': '25', 'dadra & nagar haveli': '26', 'maharashtra': '27',
+  'daman & diu': '26', 'dadra & nagar haveli': '26', 'maharashtra': '27',
   'andhra pradesh': '28', 'karnataka': '29', 'goa': '30', 'lakshadweep': '31',
   'kerala': '32', 'tamil nadu': '33', 'puducherry': '34', 'andaman & nicobar': '35',
   'telangana': '36', 'ladakh': '38',
@@ -121,10 +121,11 @@ function buildHtml(inv: Invoice, items: InvItem[], diamonds: DiamondItem[], cust
   const bankBranch = bank.branch || 'Faridabad Branch, Ground Floor, SCO-32, Sec-16, Huda Market, Old Faridabad, 121002'
   const bankAcType = bank.account_type || 'Current Account'
   const shopPan = s.shop_pan || ''
-  const shopCity = s.shop_city || 'Delhi'
+  const shopCity = s.shop_city || 'Faridabad'
 
-  const sellerStateCode = shopGstin ? shopGstin.substring(0, 2) : '07'
-  const buyerStateCode = customer?.gstin ? customer.gstin.substring(0, 2) : stateCode(customer?.state || inv.customer_state || '')
+  const sellerStateCode = shopGstin ? shopGstin.substring(0, 2) : stateCode(String(s.shop_state || 'Haryana'))
+  // Prefer the invoice-time snapshot so reprints of old invoices never change
+  const buyerStateCode = inv.customer_gstin ? inv.customer_gstin.substring(0, 2) : stateCode(String(inv.customer_state || customer?.state || ''))
   const isInterState = sellerStateCode !== buyerStateCode
 
   const goodsTaxRate = 3
@@ -134,6 +135,7 @@ function buildHtml(inv: Invoice, items: InvItem[], diamonds: DiamondItem[], cust
   const hallTaxAmount = Math.max(0, Number(inv.tax_total) - goodsTaxItems)
   const totalWeight = items.reduce((s, i) => s + Number(i.weight), 0) + diamonds.reduce((s, d) => s + Number(d.weight), 0)
 
+  let hsnTaxableTotal = 0
   function hsnRows() {
     const hsnMap = new Map<string, { taxable: number; tax: number }>()
     for (const it of items) {
@@ -152,6 +154,7 @@ function buildHtml(inv: Invoice, items: InvItem[], diamonds: DiamondItem[], cust
     }
     let rows = ''
     for (const [hsn, v] of hsnMap) {
+      hsnTaxableTotal += v.taxable
       const rate = v.tax > 0 && v.taxable > 0 ? Math.round((v.tax / v.taxable) * 100) : 0
       rows += `<tr><td class="l">${hsn}</td><td class="r">&#8377;${fmt(v.taxable)}</td><td class="c">${rate}%</td><td class="r">&#8377;${fmt(isInterState ? v.tax : 0)}</td><td class="c">${isInterState ? '' : rate / 2 + '%'}</td><td class="r">&#8377;${fmt(isInterState ? 0 : v.tax / 2)}</td><td class="c">${isInterState ? '' : rate / 2 + '%'}</td><td class="r">&#8377;${fmt(isInterState ? 0 : v.tax / 2)}</td></tr>`
     }
@@ -301,7 +304,7 @@ th { background: #ddd; font-weight: 700; text-align: center; white-space: nowrap
   <td class="seller" style="width: 50%; vertical-align: top;">
     <div class="sn b">${esc(shopName).toUpperCase()}</div>
     <div class="sm">${shopAddrHtml}</div>
-    <div class="sm">State: ${esc(s.shop_state || 'Delhi')} (Code: ${sellerStateCode})</div>
+    <div class="sm">State: ${esc(s.shop_state || 'Haryana')} (Code: ${sellerStateCode})</div>
     <div class="sm">Contact: ${esc(shopPhone)}</div>
   </td>
   <td rowspan="2" style="width: 50%; padding: 0; border: none;">
@@ -328,12 +331,12 @@ th { background: #ddd; font-weight: 700; text-align: center; white-space: nowrap
 <tr>
   <td class="buyer" style="width: 50%; vertical-align: top; border-top: 1.5px solid #333;">
     <div class="bl b">Buyer (Bill to)</div>
-    <div class="b" style="font-size: 12px; margin-top: 2px;">${esc(customer?.name || inv.customer_name)}</div>
-    <div class="sm">${esc(customer?.address || inv.customer_address || '')}</div>
-    ${(customer?.gstin || inv.customer_gstin) ? `<div class="sm">GSTIN/UIN: ${esc(customer?.gstin || inv.customer_gstin)}</div>` : ''}
+    <div class="b" style="font-size: 12px; margin-top: 2px;">${esc(inv.customer_name || customer?.name || '')}</div>
+    <div class="sm">${esc(inv.customer_address || customer?.address || '')}</div>
+    ${(inv.customer_gstin || customer?.gstin) ? `<div class="sm">GSTIN/UIN: ${esc(inv.customer_gstin || customer?.gstin)}</div>` : ''}
     ${customer?.pan ? `<div class="sm">PAN/IT No: ${esc(customer.pan)}</div>` : ''}
-    <div class="sm">State: ${esc(customer?.state || inv.customer_state)} (Code: ${buyerStateCode})</div>
-    <div class="sm">Place of Supply: ${esc(customer?.state || inv.customer_state)}</div>
+    <div class="sm">State: ${esc(inv.customer_state || customer?.state)} (Code: ${buyerStateCode})</div>
+    <div class="sm">Place of Supply: ${esc(inv.customer_state || customer?.state)}</div>
   </td>
 </tr>
 </table>
@@ -367,7 +370,7 @@ ${summaryRows}
     ${hsnRows()}
     <tr style="font-weight: 700; border-top: 0.5px solid #444;">
       <td class="l">Total</td>
-      <td class="r">&#8377;${fmt(Number(inv.subtotal) + totalHc)}</td>
+      <td class="r">&#8377;${fmt(hsnTaxableTotal)}</td>
       <td></td><td class="r">&#8377;${fmt(isInterState ? inv.tax_total : 0)}</td>
       <td></td><td class="r">&#8377;${fmt(isInterState ? 0 : inv.tax_total / 2)}</td>
       <td></td><td class="r">&#8377;${fmt(isInterState ? 0 : inv.tax_total / 2)}</td>

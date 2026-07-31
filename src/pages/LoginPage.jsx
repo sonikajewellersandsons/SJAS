@@ -17,7 +17,7 @@ export default function LoginPage() {
     try {
       await signIn(email, password)
     } catch (err) {
-      setError('Invalid email or password. Please try again.')
+      setError(err?.deactivated ? 'Your account has been deactivated. Contact the owner.' : 'Invalid email or password. Please try again.')
     } finally {
       setLoading(false)
     }

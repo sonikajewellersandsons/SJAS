@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useToast } from '../components/Toast'
 import { downloadCsv } from '../lib/csv'
+import { monthEndDate } from '../lib/format'
 import { BarChart3, TrendingUp, Receipt, Users, FileText, Tag, PieChart, Download } from 'lucide-react'
 
 function fmt(n) {
@@ -69,7 +70,7 @@ function useMonthlyData(year, addToast) {
     ;(async () => {
       try {
         const { data: settings } = await supabase.from('settings').select('value').eq('key', 'shop_state').maybeSingle()
-        let shopState = 'delhi'
+        let shopState = 'haryana'
         try { const val = settings?.value; if (val) shopState = JSON.parse(val).toLowerCase() } catch {}
         const { data, error } = await supabase
           .from('invoices')
@@ -234,7 +235,9 @@ function MonthDrillDown({ month, onClose, addToast }) {
   useEffect(() => {
     const [y, m] = month.split('-')
     const from = `${y}-${m}-01`
-    const to = new Date(parseInt(y), parseInt(m), 0).toISOString().split('T')[0]
+    // Local-time last day (string-built, NOT toISOString() which shifts UTC and
+    // silently drops the last day of the month in UTC+ timezones).
+    const to = monthEndDate(y, m)
     setLoading(true)
     supabase.from('invoices').select('id, inv_no, date, customer_name, customer_state, subtotal, tax_total, grand_total, payment_mode')
       .gte('date', from).lte('date', to).order('date')
@@ -377,28 +380,34 @@ function HsnSummary({ year, addToast }) {
   const fyEnd = `${parseInt(year)+1}-03-31`
 
   useEffect(() => {
+    let cancelled = false
     setLoading(true)
     ;(async () => {
-      const { data: invoices } = await supabase.from('invoices').select('id').gte('date', fyStart).lte('date', fyEnd)
-      const invIds = (invoices || []).map(i => i.id)
-      if (invIds.length === 0) { setData([]); setLoading(false); return }
-      const { data: items } = await supabase
-        .from('invoice_items')
-        .select('price, tax_amount, weight, hallmark_charge, invoice_id, material_type, description_extra, item_master!left(name, hsn_code, category)')
-        .in('invoice_id', invIds)
-      const byHsn = {}
-      for (const it of (items || [])) {
-        const isSilver = it.item_id === null && (it.material_type === 'silver_925' || it.material_type === 'silver_ornaments')
-        const is18k = it.item_id === null && it.material_type === 'gold_18k'
-        const hsn = isSilver ? '71131130' : is18k ? '71131913' : it.item_master?.hsn_code || 'OTHER'
-        if (!byHsn[hsn]) byHsn[hsn] = { hsn, name: it.item_master?.name || it.description_extra || (isSilver ? 'Silver' : is18k ? 'Gold 18K' : ''), weight: 0, value: 0, tax: 0 }
-        byHsn[hsn].weight += parseFloat(it.weight) || 0
-        byHsn[hsn].value += parseFloat(it.price) || 0
-        byHsn[hsn].tax += parseFloat(it.tax_amount) || 0
-      }
-      setData(Object.values(byHsn).sort((a, b) => b.value - a.value))
-      setLoading(false)
+      try {
+        const { data: invoices, error: invErr } = await supabase.from('invoices').select('id').gte('date', fyStart).lte('date', fyEnd)
+        if (invErr) throw invErr
+        const invIds = (invoices || []).map(i => i.id)
+        if (invIds.length === 0) { if (!cancelled) { setData([]); setLoading(false) } return }
+        const { data: items, error: itemsErr } = await supabase
+          .from('invoice_items')
+          .select('price, tax_amount, weight, hallmark_charge, invoice_id, material_type, description_extra, item_master!left(name, hsn_code, category)')
+          .in('invoice_id', invIds)
+        if (itemsErr) throw itemsErr
+        const byHsn = {}
+        for (const it of (items || [])) {
+          const isSilver = it.item_id === null && (it.material_type === 'silver_925' || it.material_type === 'silver_ornaments')
+          const is18k = it.item_id === null && it.material_type === 'gold_18k'
+          const hsn = isSilver ? '71131130' : is18k ? '71131913' : it.item_master?.hsn_code || 'OTHER'
+          if (!byHsn[hsn]) byHsn[hsn] = { hsn, name: it.item_master?.name || it.description_extra || (isSilver ? 'Silver' : is18k ? 'Gold 18K' : ''), weight: 0, value: 0, tax: 0 }
+          byHsn[hsn].weight += parseFloat(it.weight) || 0
+          byHsn[hsn].value += parseFloat(it.price) || 0
+          byHsn[hsn].tax += parseFloat(it.tax_amount) || 0
+        }
+        if (!cancelled) setData(Object.values(byHsn).sort((a, b) => b.value - a.value))
+      } catch (err) { if (!cancelled) addToast('Failed to load HSN summary', 'error') }
+      finally { if (!cancelled) setLoading(false) }
     })()
+    return () => { cancelled = true }
   }, [year])
 
   if (loading) return <div className="loading-center"><div className="spinner" /></div>
@@ -463,14 +472,16 @@ function CustomerReport({ year, addToast }) {
   const fyEnd = `${parseInt(year)+1}-03-31`
 
   useEffect(() => {
+    let cancelled = false
     setLoading(true)
     ;(async () => {
       try {
-        const { data: invoices } = await supabase
+        const { data: invoices, error: invErr } = await supabase
           .from('invoices')
           .select('customer_name, customer_phone, customer_state, customer_gstin, grand_total, subtotal')
           .gte('date', fyStart)
           .lte('date', fyEnd)
+        if (invErr) throw invErr
         const byCust = {}
         for (const inv of (invoices || [])) {
           const key = inv.customer_name
@@ -479,10 +490,11 @@ function CustomerReport({ year, addToast }) {
           byCust[key].count++
         }
         const arr = Object.values(byCust).sort((a, b) => b.total - a.total)
-        setData(arr)
-      } catch (err) { addToast('Failed to load customer report', 'error') }
-      finally { setLoading(false) }
+        if (!cancelled) setData(arr)
+      } catch (err) { if (!cancelled) addToast('Failed to load customer report', 'error') }
+      finally { if (!cancelled) setLoading(false) }
     })()
+    return () => { cancelled = true }
   }, [year])
 
   if (loading) return <div className="loading-center"><div className="spinner" /></div>
@@ -562,13 +574,15 @@ function OthersReport({ year, addToast }) {
   const fyEnd = `${parseInt(year)+1}-03-31`
 
   useEffect(() => {
+    let cancelled = false
     setLoading(true)
     ;(async () => {
       try {
         const { data: shopSetting } = await supabase.from('settings').select('value').eq('key', 'shop_state').maybeSingle()
-        let shopState = 'delhi'
+        let shopState = 'haryana'
         try { const val = shopSetting?.value; if (val) shopState = JSON.parse(val).toLowerCase() } catch {}
-        const { data: invoices } = await supabase.from('invoices').select('id, payment_mode, cash_amt, bank_amt, grand_total, date, customer_state').gte('date', fyStart).lte('date', fyEnd)
+        const { data: invoices, error: invErr } = await supabase.from('invoices').select('id, payment_mode, cash_amt, bank_amt, grand_total, date, customer_state').gte('date', fyStart).lte('date', fyEnd)
+        if (invErr) throw invErr
 
         // Payment mode
         const byPay = { CASH: 0, 'E-BANKING': 0, BOTH: 0 }
@@ -576,7 +590,7 @@ function OthersReport({ year, addToast }) {
           const mode = inv.payment_mode || 'CASH'
           byPay[mode] = (byPay[mode] || 0) + (parseFloat(inv.grand_total) || 0)
         }
-        setPayData(Object.entries(byPay).filter(([, v]) => v > 0).map(([k, v]) => ({ mode: k, total: v })))
+        if (!cancelled) setPayData(Object.entries(byPay).filter(([, v]) => v > 0).map(([k, v]) => ({ mode: k, total: v })))
 
         // Monthly outward supply summary
         const byMonth = {}
@@ -591,15 +605,16 @@ function OthersReport({ year, addToast }) {
             byMonth[m].inter++
           }
         }
-        setSupplyData(byMonth)
+        if (!cancelled) setSupplyData(byMonth)
 
         // Category sales
         const invIds = (invoices || []).map(i => i.id)
         if (invIds.length > 0) {
-          const { data: items } = await supabase
+          const { data: items, error: itemsErr } = await supabase
             .from('invoice_items')
             .select('price, tax_amount, invoice_id, material_type, item_master!left(name, hsn_code, category)')
             .in('invoice_id', invIds)
+          if (itemsErr) throw itemsErr
           const byCat = {}
           for (const it of (items || [])) {
             const isSilver = it.item_id === null && (it.material_type === 'silver_925' || it.material_type === 'silver_ornaments')
@@ -610,11 +625,12 @@ function OthersReport({ year, addToast }) {
             byCat[cat].tax += parseFloat(it.tax_amount) || 0
             byCat[cat].count++
           }
-          setCatData(Object.values(byCat).sort((a, b) => b.value - a.value))
+          if (!cancelled) setCatData(Object.values(byCat).sort((a, b) => b.value - a.value))
         }
-      } catch (err) { addToast('Failed to load report data', 'error') }
-      finally { setLoading(false) }
+      } catch (err) { if (!cancelled) addToast('Failed to load report data', 'error') }
+      finally { if (!cancelled) setLoading(false) }
     })()
+    return () => { cancelled = true }
   }, [year])
 
   if (loading) return <div className="loading-center"><div className="spinner" /></div>

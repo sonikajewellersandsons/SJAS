@@ -36,43 +36,47 @@ export default function SalesPage() {
 
   async function loadSales() {
     setLoading(true)
-    const [itemsRes, matRes] = await Promise.all([
-      supabase.from('invoice_items')
-        .select('*, invoices!inner(inv_no, date, customer_name, customer_phone, gold_rate, grand_total), item_master!left(name, hsn_code, purity)')
-        .order('id', { ascending: false }).range(0, PAGE_SIZE),
-      supabase.from('material_sales').select('*').order('created_at', { ascending: false }).order('id', { ascending: false }).range(0, PAGE_SIZE),
-    ])
-    if (itemsRes.error) addToast('Failed to load sales', 'error')
-    if (matRes.error) addToast('Failed to load material sales', 'error')
-    setItems((itemsRes.data || []).slice(0, PAGE_SIZE))
-    setMatSales((matRes.data || []).slice(0, PAGE_SIZE))
-    setHasMoreItems((itemsRes.data || []).length > PAGE_SIZE)
-    setHasMoreMat((matRes.data || []).length > PAGE_SIZE)
-    setLoading(false)
+    try {
+      const [itemsRes, matRes] = await Promise.all([
+        supabase.from('invoice_items')
+          .select('*, invoices!inner(inv_no, date, customer_name, customer_phone, gold_rate, grand_total), item_master!left(name, hsn_code, purity)')
+          .order('id', { ascending: false }).range(0, PAGE_SIZE),
+        supabase.from('material_sales').select('*').order('created_at', { ascending: false }).order('id', { ascending: false }).range(0, PAGE_SIZE),
+      ])
+      if (itemsRes.error) addToast('Failed to load sales', 'error')
+      if (matRes.error) addToast('Failed to load material sales', 'error')
+      setItems((itemsRes.data || []).slice(0, PAGE_SIZE))
+      setMatSales((matRes.data || []).slice(0, PAGE_SIZE))
+      setHasMoreItems((itemsRes.data || []).length > PAGE_SIZE)
+      setHasMoreMat((matRes.data || []).length > PAGE_SIZE)
+    } catch (err) { addToast('Failed to load sales', 'error') }
+    finally { setLoading(false) }
   }
 
   async function loadMore() {
     if (loadingMore) return
     setLoadingMore(true)
-    const [itemsRes, matRes] = await Promise.all([
-      hasMoreItems
-        ? supabase.from('invoice_items')
-            .select('*, invoices!inner(inv_no, date, customer_name, customer_phone, gold_rate, grand_total), item_master!left(name, hsn_code, purity)')
-            .order('id', { ascending: false }).range(items.length, items.length + PAGE_SIZE)
-        : Promise.resolve({ data: [] }),
-      hasMoreMat
-        ? supabase.from('material_sales').select('*').order('created_at', { ascending: false }).order('id', { ascending: false }).range(matSales.length, matSales.length + PAGE_SIZE)
-        : Promise.resolve({ data: [] }),
-    ])
-    if (itemsRes.data) {
-      setItems(prev => [...prev, ...itemsRes.data.slice(0, PAGE_SIZE)])
-      setHasMoreItems(itemsRes.data.length > PAGE_SIZE)
-    }
-    if (matRes.data) {
-      setMatSales(prev => [...prev, ...matRes.data.slice(0, PAGE_SIZE)])
-      setHasMoreMat(matRes.data.length > PAGE_SIZE)
-    }
-    setLoadingMore(false)
+    try {
+      const [itemsRes, matRes] = await Promise.all([
+        hasMoreItems
+          ? supabase.from('invoice_items')
+              .select('*, invoices!inner(inv_no, date, customer_name, customer_phone, gold_rate, grand_total), item_master!left(name, hsn_code, purity)')
+              .order('id', { ascending: false }).range(items.length, items.length + PAGE_SIZE)
+          : Promise.resolve({ data: [] }),
+        hasMoreMat
+          ? supabase.from('material_sales').select('*').order('created_at', { ascending: false }).order('id', { ascending: false }).range(matSales.length, matSales.length + PAGE_SIZE)
+          : Promise.resolve({ data: [] }),
+      ])
+      if (itemsRes.data) {
+        setItems(prev => [...prev, ...itemsRes.data.slice(0, PAGE_SIZE)])
+        setHasMoreItems(itemsRes.data.length > PAGE_SIZE)
+      }
+      if (matRes.data) {
+        setMatSales(prev => [...prev, ...matRes.data.slice(0, PAGE_SIZE)])
+        setHasMoreMat(matRes.data.length > PAGE_SIZE)
+      }
+    } catch (err) { addToast('Failed to load more sales', 'error') }
+    finally { setLoadingMore(false) }
   }
 
   function exportCsv() {

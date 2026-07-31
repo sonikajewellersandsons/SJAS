@@ -592,6 +592,13 @@ function PurchaseTab() {
       addToast('Add at least one item with weight', 'error')
       return
     }
+    for (const l of validLines) {
+      const q = parseInt(l.qty)
+      if (isNaN(q) || q < 1) {
+        addToast('Quantity must be at least 1', 'error')
+        return
+      }
+    }
 
     setSaving(true)
     try {

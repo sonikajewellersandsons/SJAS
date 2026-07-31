@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import { useToast } from '../components/Toast'
 import ComboBox from '../components/ComboBox'
 import { logAction } from '../lib/audit'
+import { cleanPhone, financialYear, fyFromInvNo, invNoSeq } from '../lib/format'
 import { Search, Plus, X, FileText } from 'lucide-react'
 
 const DEFAULT_TAX_PCT = 3
@@ -126,7 +127,8 @@ export default function BillingPage() {
       } else {
         await generateInvNo()
         // Auto-fill gold rate from Price Calculator (24K with GST → 22K without GST)
-        const savedRate = localStorage.getItem('pc_goldRate')
+        let savedRate = null
+        try { savedRate = localStorage.getItem('pc_goldRate') } catch { /* storage unavailable */ }
         if (savedRate) {
           const parsed = parseFloat(savedRate.replace(/,/g, ''))
           if (!isNaN(parsed) && parsed > 0) {
@@ -183,7 +185,7 @@ export default function BillingPage() {
             description: item.description_extra || 'Gold Jewellery (18K)',
             weight: item.weight.toString(),
             labour_pct: item.labour_pct != null && item.labour_pct !== '' ? item.labour_pct.toString() : DEFAULT_LABOUR_PCT.toString(),
-            tax_pct: '0',
+            tax_pct: item.tax_pct != null && item.tax_pct !== undefined ? item.tax_pct.toString() : '0',
             hallmark_charge: 0,
             huid_enabled: false,
             huid_code: '',
@@ -195,7 +197,7 @@ export default function BillingPage() {
           description: item.description_extra || 'Quick Silver',
           weight: item.weight.toString(),
           labour_pct: '0',
-          tax_pct: '0',
+          tax_pct: item.tax_pct != null && item.tax_pct !== undefined ? item.tax_pct.toString() : '0',
           hallmark_charge: 0,
           huid_enabled: false,
           huid_code: '',
@@ -227,10 +229,7 @@ export default function BillingPage() {
   }
 
   async function getFy() {
-    const today = new Date()
-    const y = today.getFullYear()
-    const m = today.getMonth() + 1
-    return m >= 4 ? `${y}-${(y + 1).toString().slice(-2)}` : `${y - 1}-${y.toString().slice(-2)}`
+    return financialYear()
   }
 
   async function generateInvNo() {
@@ -242,7 +241,7 @@ export default function BillingPage() {
 
   const filteredCustomers = useMemo(() => {
     const q = custSearch.toLowerCase()
-    const digits = custSearch.trim().replace(/^\+91\s*/, '').replace(/\D/g, '')
+    const digits = cleanPhone(custSearch)
     const digitsNo91 = digits.length > 10 && digits.startsWith('91') ? digits.slice(2) : digits
     return customers.filter(c =>
       c.name.toLowerCase().includes(q) ||
@@ -374,10 +373,13 @@ export default function BillingPage() {
 
     const lots = stockLotsByName[item.name]
     if (!lots) return { available: false }
-    const match = lots.find(l =>
+    // Aggregate available pcs across ALL matching lots (multiple identical lots
+    // can jointly satisfy a multi-piece line — previously only the top lot was
+    // considered, producing false "out of stock").
+    const matches = lots.filter(l =>
       Number(l.weight) === w && l.huid === !!huidEnabled && l.avail_pcs > 0
     )
-    if (!match) return { available: false }
+    if (matches.length === 0) return { available: false }
     const alreadyClaimed = lineItems.filter((ln, i) => {
       if (i >= excludeIndex) return false
       // Skip lines unchanged from their original (their stock is already consumed)
@@ -389,8 +391,9 @@ export default function BillingPage() {
         masterItems.find(m => m.id === parseInt(ln.item_id))?.name === item.name &&
         (ln.huid_enabled === true) === !!huidEnabled
     }).length
-    return (match.avail_pcs - alreadyClaimed) > 0
-      ? { available: true, lot: match }
+    const totalAvail = matches.reduce((s, l) => s + l.avail_pcs, 0)
+    return (totalAvail - alreadyClaimed) > 0
+      ? { available: true }
       : { available: false }
   }
 
@@ -528,6 +531,7 @@ export default function BillingPage() {
 
     if (!selectedCustomer && !isNewCustomer) { addToast('Select or add a customer', 'error'); savingRef.current = false; return }
     if (!goldRate || goldRate <= 0) { addToast('Enter gold rate', 'error'); savingRef.current = false; return }
+    if (isNewCustomer && !newCust.name.trim()) { addToast('Customer name is required', 'error'); savingRef.current = false; return }
     const validLines = lineItems.filter(l => l.item_id)
     if (validLines.length === 0) { addToast('Add at least one item', 'error'); savingRef.current = false; return }
     for (const l of validLines) {
@@ -561,35 +565,33 @@ export default function BillingPage() {
 
     setSaving(true)
     let reversed = false
+    let invId, finalInvNo
+    let oldItems = []
+    let originalHeader = null
+    const isEdit = (editMode || editModeRef.current) && editInvoiceId
     try {
-      let invId, finalInvNo
-
-      if ((editMode || editModeRef.current) && editInvoiceId) {
-        invId = editInvoiceId
-        finalInvNo = invNo
-        const { error: revMatErr } = await supabase.rpc('reverse_material_sale', { p_invoice_id: invId })
-        if (revMatErr) throw revMatErr
-        reversed = true
-        const { error: revErr } = await supabase.rpc('reverse_invoice_stock', { p_invoice_id: invId })
-        if (revErr) throw revErr
-        const { data: freshLots } = await supabase.rpc('get_stock_lots')
-        if (freshLots) setStockLots(freshLots)
-      } else {
-        finalInvNo = invNo
-      }
-
+      // ── Resolve customer BEFORE any stock mutation so a failure here never
+      //    leaves released stock behind. Use the DB record's details when the
+      //    typed phone matches an existing customer (header must match the link).
       let customerId = selectedCustomer?.id
+      let customerName = selectedCustomer ? selectedCustomer.name : newCust.name.trim()
+      let customerAddress = selectedCustomer ? (selectedCustomer.address || '') : newCust.address.trim()
+      let customerPhone = selectedCustomer ? (selectedCustomer.phone || '') : newCust.phone.trim()
+      let customerState = selectedCustomer ? (selectedCustomer.state || 'Haryana') : newCust.state
+      let customerGstin = selectedCustomer ? (selectedCustomer.gstin || '') : newCust.gstin.trim().toUpperCase()
 
       if (isNewCustomer) {
-        if (!newCust.name.trim()) { addToast('Customer name is required', 'error'); setSaving(false); savingRef.current = false; return }
         let cleanedPhone = ''
         if (newCust.phone.trim()) {
-          cleanedPhone = newCust.phone.trim().replace(/^\+91\s*/, '').replace(/\D/g, '')
-          const { data: existing } = await supabase.from('customers').select('id').eq('phone', cleanedPhone).maybeSingle()
+          cleanedPhone = cleanPhone(newCust.phone)
+          const { data: existing } = await supabase.from('customers').select('id, name, phone, address, state, gstin').eq('phone', cleanedPhone).maybeSingle()
           if (existing) {
             customerId = existing.id
-            setSelectedCustomer(existing)
-            setIsNewCustomer(false)
+            customerName = existing.name
+            customerAddress = existing.address || ''
+            customerPhone = existing.phone || ''
+            customerState = existing.state || 'Haryana'
+            customerGstin = existing.gstin || ''
           }
         }
         if (!customerId) {
@@ -608,15 +610,34 @@ export default function BillingPage() {
         }
       }
 
+      if (isEdit) {
+        invId = editInvoiceId
+        finalInvNo = invNo
+        // Snapshot the pre-edit rows so a failed save can fully restore them.
+        const { data: curInv } = await supabase.from('invoices').select('*').eq('id', invId).single()
+        if (curInv) originalHeader = curInv
+        const { data: curItems } = await supabase.from('invoice_items').select('*').eq('invoice_id', invId)
+        oldItems = curItems || []
+        const { error: revMatErr } = await supabase.rpc('reverse_material_sale', { p_invoice_id: invId })
+        if (revMatErr) throw revMatErr
+        reversed = true
+        const { error: revErr } = await supabase.rpc('reverse_invoice_stock', { p_invoice_id: invId })
+        if (revErr) throw revErr
+        const { data: freshLots } = await supabase.rpc('get_stock_lots')
+        if (freshLots) setStockLots(freshLots)
+      } else {
+        finalInvNo = invNo
+      }
+
       const invoiceData = {
         inv_no: finalInvNo,
         date,
         customer_id: customerId,
-        customer_name: selectedCustomer ? selectedCustomer.name : newCust.name.trim(),
-        customer_address: selectedCustomer ? (selectedCustomer.address || '') : newCust.address.trim(),
-        customer_phone: selectedCustomer ? (selectedCustomer.phone || '') : newCust.phone.trim(),
-        customer_state: selectedCustomer ? (selectedCustomer.state || 'Haryana') : newCust.state,
-        customer_gstin: selectedCustomer ? (selectedCustomer.gstin || '') : newCust.gstin.trim().toUpperCase(),
+        customer_name: customerName,
+        customer_address: customerAddress,
+        customer_phone: customerPhone,
+        customer_state: customerState,
+        customer_gstin: customerGstin,
         gold_rate: Math.round(goldRate * 100) / 100,
         subtotal: Math.round(totalPrice * 100) / 100,
         hallmark_total: Math.round(totalHc * 100) / 100,
@@ -632,7 +653,7 @@ export default function BillingPage() {
         created_by: userProfile?.id || null,
       }
 
-      if (editMode && invId) {
+      if (isEdit) {
         const { error: updErr } = await supabase.from('invoices').update(invoiceData).eq('id', invId)
         if (updErr) throw updErr
       } else {
@@ -701,40 +722,28 @@ export default function BillingPage() {
       const { error: itemsErr } = await supabase.from('invoice_items').insert(invoiceItemsData)
       if (itemsErr) throw itemsErr
 
-      // Delete old items AFTER insert to avoid data loss on failure
-      if (editMode && invId) {
-        const { error: delErr } = await supabase.from('invoice_items').delete().eq('invoice_id', invId)
+      // Delete ONLY the pre-existing rows (by id) — never the just-inserted ones
+      if (isEdit && oldItems.length > 0) {
+        const { error: delErr } = await supabase.from('invoice_items').delete().in('id', oldItems.map(i => i.id))
         if (delErr) throw delErr
       }
 
       const { error: procErr } = await supabase.rpc('process_invoice_stock', { p_invoice_id: invId })
-      if (procErr) {
-        if (!editMode) {
-          await supabase.from('invoice_items').delete().eq('invoice_id', invId)
-          await supabase.from('invoices').delete().eq('id', invId)
-        }
-        throw procErr
-      }
+      if (procErr) throw procErr
 
       const { error: matProcErr } = await supabase.rpc('process_material_sale', { p_invoice_id: invId })
-      if (matProcErr) {
-        await supabase.rpc('reverse_invoice_stock', { p_invoice_id: invId }).catch(() => {})
-        if (!editMode) {
-          await supabase.from('invoice_items').delete().eq('invoice_id', invId)
-          await supabase.from('invoices').delete().eq('id', invId)
-        }
-        throw matProcErr
-      }
+      if (matProcErr) throw matProcErr
 
-      // Update inv_sequences (both create and edit — handles manually entered higher numbers)
-      const seqMatch = finalInvNo.match(/\/(\d+)$/)
-      if (seqMatch) {
-        const seqNum = parseInt(seqMatch[1])
-        const fy = await getFy()
-        const { data: cur } = await supabase.from('inv_sequences').select('last_no').eq('type', 'sale').eq('fy', fy).maybeSingle()
+      // Update inv_sequences (both create and edit — handles manually entered higher numbers).
+      // Use the FY embedded in the chosen number, not today's date, so a manual
+      // number from another financial year doesn't advance the current FY sequence.
+      const seqNum = invNoSeq(finalInvNo)
+      const fyFromNumber = fyFromInvNo(finalInvNo)
+      if (seqNum !== null && fyFromNumber) {
+        const { data: cur } = await supabase.from('inv_sequences').select('last_no').eq('type', 'sale').eq('fy', fyFromNumber).maybeSingle()
         const curNo = cur ? parseInt(cur.last_no) || 0 : 0
         if (seqNum > curNo) {
-          const { error: seqErr } = await supabase.from('inv_sequences').upsert({ type: 'sale', fy, last_no: seqNum }, { onConflict: 'type,fy' })
+          const { error: seqErr } = await supabase.from('inv_sequences').upsert({ type: 'sale', fy: fyFromNumber, last_no: seqNum }, { onConflict: 'type,fy' })
           if (seqErr) console.warn('Sequence update failed (non-critical):', seqErr.message)
         }
       }
@@ -746,17 +755,22 @@ export default function BillingPage() {
 
       addToast(editMode ? `Invoice ${finalInvNo} updated` : `Invoice ${finalInvNo} created`, 'success')
       logAction(editMode ? 'invoice_updated' : 'invoice_created', 'invoices', invId, { inv_no: finalInvNo, grand_total: grandTotal, customer: selectedCustomer?.name || newCust.name || '' })
-      const { data: freshLots } = await supabase.rpc('get_stock_lots')
-      if (freshLots) setStockLots(freshLots)
-      const { data: freshGold } = await supabase.from('material_purchases').select('weight, sold_weight').eq('type', 'gold_18k')
-      if (freshGold) setGoldStock(freshGold.reduce((s, p) => s + parseFloat(p.weight) - parseFloat(p.sold_weight), 0))
-      const { data: freshSilver } = await supabase.from('material_purchases').select('type, weight, sold_weight').in('type', ['silver_925', 'silver_ornaments'])
-      if (freshSilver) {
-        const stock = { silver_925: 0, silver_ornaments: 0 }
-        freshSilver.forEach(p => { stock[p.type] = (stock[p.type] || 0) + parseFloat(p.weight) - parseFloat(p.sold_weight) })
-        setSilverStock(stock)
-      }
-      await resetForm()
+      // Post-save refresh + form reset are best-effort. A failure here must NOT
+      // roll back the already-committed save (the catch below only handles
+      // failures that happen BEFORE commit).
+      try {
+        const { data: freshLots } = await supabase.rpc('get_stock_lots')
+        if (freshLots) setStockLots(freshLots)
+        const { data: freshGold } = await supabase.from('material_purchases').select('weight, sold_weight').eq('type', 'gold_18k')
+        if (freshGold) setGoldStock(freshGold.reduce((s, p) => s + parseFloat(p.weight) - parseFloat(p.sold_weight), 0))
+        const { data: freshSilver } = await supabase.from('material_purchases').select('type, weight, sold_weight').in('type', ['silver_925', 'silver_ornaments'])
+        if (freshSilver) {
+          const stock = { silver_925: 0, silver_ornaments: 0 }
+          freshSilver.forEach(p => { stock[p.type] = (stock[p.type] || 0) + parseFloat(p.weight) - parseFloat(p.sold_weight) })
+          setSilverStock(stock)
+        }
+        await resetForm()
+      } catch (e) { console.warn('Post-save refresh failed:', e) }
     } catch (err) {
       if (err?.code === '23505') {
         // Last-resort race: another tab committed the same number between our
@@ -768,72 +782,32 @@ export default function BillingPage() {
         addToast(err.message || 'Failed to save invoice', 'error')
       }
       console.error('Invoice error:', err)
-      // #1/#16: restore stock and reload form on edit failure
-      if (reversed && editModeRef.current && editInvoiceId) {
-        await supabase.rpc('reverse_material_sale', { p_invoice_id: editInvoiceId }).catch(() => {})
-        await supabase.rpc('process_invoice_stock', { p_invoice_id: editInvoiceId }).catch(() => {})
-        await supabase.rpc('process_material_sale', { p_invoice_id: editInvoiceId }).catch(() => {})
-        const { data: restored } = await supabase.from('invoices').select('*, invoice_items(*, item_master!left(name, hsn_code))').eq('id', editInvoiceId).single()
-        if (restored) {
-          const restoredCust = customers.find(c => c.id === restored.customer_id)
-          if (restoredCust) setSelectedCustomer(restoredCust)
-          setDate(restored.date)
-          setInvNo(restored.inv_no)
-          setAdjAmt(parseFloat(restored.adj_amount) || 0)
-          setDiscount(parseFloat(restored.discount) || 0)
-          setPaymentMode(restored.payment_mode)
-          setCashAmt(parseFloat(restored.cash_amt) || 0)
-          setBankAmt(parseFloat(restored.bank_amt) || 0)
-          if (restored.gold_rate) { setGoldRate(parseFloat(restored.gold_rate)); setGoldRateStr(parseFloat(restored.gold_rate).toLocaleString('en-IN')) }
-          const restoredGoldRate = parseFloat(restored.gold_rate) || 0
-          setLineItems((restored.invoice_items || []).map(item => {
-            if (!item.item_id) {
-              if (item.material_type === 'gold_18k') {
-                return {
-                  item_id: 'gold18k',
-                  description: item.description_extra || 'Gold Jewellery (18K)',
-                  weight: item.weight.toString(),
-                  labour_pct: item.labour_pct != null && item.labour_pct !== '' ? item.labour_pct.toString() : DEFAULT_LABOUR_PCT.toString(),
-                  tax_pct: '0',
-                  hallmark_charge: 0,
-                  huid_enabled: false,
-                  huid_code: '',
-                  is_gold_18k: true,
-                }
-              }
-              return {
-                item_id: 'silver',
-                description: item.description_extra || 'Quick Silver',
-                weight: item.weight.toString(),
-                labour_pct: '0',
-                tax_pct: '0',
-                hallmark_charge: 0,
-                huid_enabled: false,
-                huid_code: '',
-                is_silver: true,
-                silver_rate: item.rate_per_gram ? item.rate_per_gram.toString() : '',
-                silver_type: item.material_type || 'silver_925',
-              }
-            }
-            const mi = masterItems.find(m => m.id === item.item_id)
-            const is18k = mi?.material_type === 'gold_18k'
-            const restoredBaseRate = restoredGoldRate > 0 ? (is18k ? restoredGoldRate / 10 * 18 / 22 : restoredGoldRate / 10) : 0
-            const storedLabourPct = parseFloat(item.labour_pct)
-            const labourPct = storedLabourPct > 0 ? storedLabourPct : (restoredBaseRate > 0 ? Math.round((parseFloat(item.rate_per_gram) - restoredBaseRate) / restoredBaseRate * 100) : DEFAULT_LABOUR_PCT)
-            return {
-              item_id: item.item_id.toString(),
-              description: mi?.name || '',
-              weight: item.weight.toString(),
-              labour_pct: labourPct,
-              tax_pct: item.tax_pct !== null && item.tax_pct !== undefined ? parseFloat(item.tax_pct) : DEFAULT_TAX_PCT,
-              hallmark_charge: parseFloat(item.hallmark_charge) || 0,
-              huid_enabled: item.huid,
-              huid_code: item.huid_code || '',
-              is_silver: false,
-              silver_rate: '',
-            }
-          }))
+      if (isEdit && invId) {
+        // Full restore: rebuild the original items, header and stock consumption
+        // so a failed edit never leaves released stock or a half-saved invoice.
+        await supabase.from('invoice_items').delete().eq('invoice_id', invId).catch(() => {})
+        if (oldItems.length > 0) {
+          await supabase.from('invoice_items').insert(oldItems.map(({ id, ...rest }) => rest)).catch(() => {})
         }
+        if (reversed) {
+          let stockRestored = true
+          await supabase.rpc('process_invoice_stock', { p_invoice_id: invId }).catch(() => { stockRestored = false })
+          await supabase.rpc('process_material_sale', { p_invoice_id: invId }).catch(() => { stockRestored = false })
+          if (!stockRestored) addToast('Original stock could not be fully restored. Please verify stock.', 'error')
+        }
+        if (originalHeader) {
+          const { error: hdrErr } = await supabase.from('invoices').update(originalHeader).eq('id', invId)
+          if (hdrErr) console.warn('Failed to restore invoice header:', hdrErr.message)
+        }
+        const { data: freshLots } = await supabase.rpc('get_stock_lots')
+        if (freshLots) setStockLots(freshLots)
+        await loadEditInvoice(invId, customers, masterItems)
+      } else if (invId) {
+        // Create mode: remove the partial invoice so it never blocks the
+        // last-invoice delete or shows up as an empty row.
+        await supabase.rpc('delete_invoice', { p_invoice_id: invId }).catch(async () => {
+          await supabase.from('invoice_items').delete().eq('invoice_id', invId).catch(() => {})
+        })
       }
     } finally {
       setSaving(false)
@@ -860,6 +834,25 @@ export default function BillingPage() {
     editOriginalItems.current = []
     setGoldRate(0)
     setGoldRateStr('')
+    setUseCustomGoldRate(false)
+    // Re-autofill gold rate for the next invoice (price calculator → settings fallback)
+    let savedRate = null
+    try { savedRate = localStorage.getItem('pc_goldRate') } catch { /* storage unavailable */ }
+    if (savedRate) {
+      const parsed = parseFloat(savedRate.replace(/,/g, ''))
+      if (!isNaN(parsed) && parsed > 0) {
+        const converted = Math.round(parsed / 1.03 * 916 / 999)
+        setGoldRate(converted)
+        setGoldRateStr(converted.toLocaleString('en-IN'))
+      }
+    } else {
+      const { data: settings } = await supabase.from('settings').select('key, value')
+      const goldSetting = (settings || []).find(s => s.key === 'gold_rate')
+      if (goldSetting?.value) {
+        const g = parseFloat(goldSetting.value)
+        if (!isNaN(g) && g > 0) { setGoldRate(g); setGoldRateStr(g.toLocaleString('en-IN')) }
+      }
+    }
     await generateInvNo()
   }
 

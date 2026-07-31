@@ -51,44 +51,48 @@ function ShopDetailsTab() {
 
   async function loadSettings() {
     setLoading(true)
-    const { data, error } = await supabase.from('settings').select('key, value')
-    if (error) { addToast('Failed to load settings', 'error'); setLoading(false); return }
-    const map = {}
-    for (const row of (data || [])) {
-      const v = row.value
-      map[row.key] = typeof v === 'string' ? v : JSON.stringify(v)
-    }
-    const rawVal = (key) => {
-      const v = map[key]
-      if (!v) return ''
-      try { return JSON.parse(v) } catch { return v }
-    }
-    setForm({
-      shop_name: rawVal('shop_name'),
-      shop_address: rawVal('shop_address'),
-      shop_gstin: rawVal('shop_gstin'),
-      shop_phone: rawVal('shop_phone'),
-      shop_email: rawVal('shop_email'),
-      shop_state: rawVal('shop_state'),
-      shop_city: rawVal('shop_city'),
-      shop_pan: rawVal('shop_pan'),
-      declaration: rawVal('declaration'),
-      fy_start: rawVal('fy_start'),
-    })
-    setLoading(false)
+    try {
+      const { data, error } = await supabase.from('settings').select('key, value')
+      if (error) throw error
+      const map = {}
+      for (const row of (data || [])) {
+        const v = row.value
+        map[row.key] = typeof v === 'string' ? v : JSON.stringify(v)
+      }
+      const rawVal = (key) => {
+        const v = map[key]
+        if (!v) return ''
+        try { return JSON.parse(v) } catch { return v }
+      }
+      setForm({
+        shop_name: rawVal('shop_name'),
+        shop_address: rawVal('shop_address'),
+        shop_gstin: rawVal('shop_gstin'),
+        shop_phone: rawVal('shop_phone'),
+        shop_email: rawVal('shop_email'),
+        shop_state: rawVal('shop_state'),
+        shop_city: rawVal('shop_city'),
+        shop_pan: rawVal('shop_pan'),
+        declaration: rawVal('declaration'),
+        fy_start: rawVal('fy_start'),
+      })
+    } catch (err) { addToast('Failed to load settings', 'error') }
+    finally { setLoading(false) }
   }
 
   async function save(e) {
     e.preventDefault()
     setSaving(true)
-    const entries = Object.entries(form).map(([key, value]) => ({
-      key, value: JSON.stringify(value)
-    }))
-    const { error } = await supabase.from('settings').upsert(entries, { onConflict: 'key' })
-    if (error) { addToast(error.message, 'error'); setSaving(false); return }
-    addToast('Settings saved', 'success')
-    logAction('settings_saved', 'settings', null, { keys: Object.keys(form) })
-    setSaving(false)
+    try {
+      const entries = Object.entries(form).map(([key, value]) => ({
+        key, value: JSON.stringify(value)
+      }))
+      const { error } = await supabase.from('settings').upsert(entries, { onConflict: 'key' })
+      if (error) throw error
+      addToast('Settings saved', 'success')
+      logAction('settings_saved', 'settings', null, { keys: Object.keys(form) })
+    } catch (err) { addToast(err.message || 'Failed to save settings', 'error') }
+    finally { setSaving(false) }
   }
 
   if (loading) return <div className="loading-center"><div className="spinner" /></div>
@@ -180,33 +184,37 @@ function BankDetailsTab() {
 
   async function loadBank() {
     setLoading(true)
-    const { data, error } = await supabase.from('settings').select('value').eq('key', 'bank_details').maybeSingle()
-    if (error) { addToast('Failed to load bank details', 'error'); setLoading(false); return }
-    if (data?.value) {
-      let b = {}
-    try { b = data.value ? (typeof data.value === 'string' ? JSON.parse(data.value) : data.value) : {} } catch { b = {} }
-      setForm({
-        bank_name: b.bank_name || '',
-        account_holder: b.account_holder || '',
-        account_no: b.account_no || '',
-        ifsc: b.ifsc || '',
-        branch: b.branch || '',
-      })
-    }
-    setLoading(false)
+    try {
+      const { data, error } = await supabase.from('settings').select('value').eq('key', 'bank_details').maybeSingle()
+      if (error) throw error
+      if (data?.value) {
+        let b = {}
+        try { b = data.value ? (typeof data.value === 'string' ? JSON.parse(data.value) : data.value) : {} } catch { b = {} }
+        setForm({
+          bank_name: b.bank_name || '',
+          account_holder: b.account_holder || '',
+          account_no: b.account_no || '',
+          ifsc: b.ifsc || '',
+          branch: b.branch || '',
+        })
+      }
+    } catch (err) { addToast('Failed to load bank details', 'error') }
+    finally { setLoading(false) }
   }
 
   async function save(e) {
     e.preventDefault()
     setSaving(true)
-    const { error } = await supabase.from('settings').upsert(
-      { key: 'bank_details', value: JSON.stringify(form) },
-      { onConflict: 'key' }
-    )
-    if (error) { addToast(error.message, 'error'); setSaving(false); return }
-    addToast('Bank details saved', 'success')
-    logAction('bank_details_saved', 'settings', null, { bank_name: form.bank_name })
-    setSaving(false)
+    try {
+      const { error } = await supabase.from('settings').upsert(
+        { key: 'bank_details', value: JSON.stringify(form) },
+        { onConflict: 'key' }
+      )
+      if (error) throw error
+      addToast('Bank details saved', 'success')
+      logAction('bank_details_saved', 'settings', null, { bank_name: form.bank_name })
+    } catch (err) { addToast(err.message || 'Failed to save bank details', 'error') }
+    finally { setSaving(false) }
   }
 
   if (loading) return <div className="loading-center"><div className="spinner" /></div>
@@ -264,15 +272,17 @@ function UsersTab() {
 
   async function loadUsers() {
     setLoading(true)
-    const [usersRes, rolesRes] = await Promise.all([
-      supabase.from('users').select('*').order('name'),
-      supabase.from('role_masters').select('*').order('role'),
-    ])
-    if (usersRes.error) addToast('Failed to load users', 'error')
-    if (rolesRes.error) addToast('Failed to load roles', 'error')
-    setUsers(usersRes.data || [])
-    setRoles(rolesRes.data || [])
-    setLoading(false)
+    try {
+      const [usersRes, rolesRes] = await Promise.all([
+        supabase.from('users').select('*').order('name'),
+        supabase.from('role_masters').select('*').order('role'),
+      ])
+      if (usersRes.error) addToast('Failed to load users', 'error')
+      if (rolesRes.error) addToast('Failed to load roles', 'error')
+      setUsers(usersRes.data || [])
+      setRoles(rolesRes.data || [])
+    } catch (err) { addToast('Failed to load users', 'error') }
+    finally { setLoading(false) }
   }
 
   async function updateRole(userId, newRole) {
@@ -357,10 +367,12 @@ function RolesTab() {
 
   async function loadRoles() {
     setLoading(true)
-    const { data, error } = await supabase.from('role_masters').select('*').order('role')
-    if (error) console.error('Failed to load roles:', error)
-    setRoles(data || [])
-    setLoading(false)
+    try {
+      const { data, error } = await supabase.from('role_masters').select('*').order('role')
+      if (error) console.error('Failed to load roles:', error)
+      setRoles(data || [])
+    } catch (err) { console.error('Failed to load roles:', err) }
+    finally { setLoading(false) }
   }
 
   const PERM_LABELS = {
@@ -462,15 +474,17 @@ function ActivityLogTab() {
 
   async function loadLogs() {
     setLoading(true)
-    const [logRes, userRes] = await Promise.all([
-      supabase.from('logs').select('*').order('created_at', { ascending: false }).limit(300),
-      supabase.from('users').select('id, name').order('name'),
-    ])
-    if (logRes.error) addToast('Failed to load activity log', 'error')
-    if (userRes.error) addToast('Failed to load users', 'error')
-    setLogs(logRes.data || [])
-    setUsers(userRes.data || [])
-    setLoading(false)
+    try {
+      const [logRes, userRes] = await Promise.all([
+        supabase.from('logs').select('*').order('created_at', { ascending: false }).limit(300),
+        supabase.from('users').select('id, name').order('name'),
+      ])
+      if (logRes.error) addToast('Failed to load activity log', 'error')
+      if (userRes.error) addToast('Failed to load users', 'error')
+      setLogs(logRes.data || [])
+      setUsers(userRes.data || [])
+    } catch (err) { addToast('Failed to load activity log', 'error') }
+    finally { setLoading(false) }
   }
 
   if (loading) return <div className="loading-center"><div className="spinner" /></div>

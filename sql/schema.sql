@@ -348,7 +348,7 @@ $$;
 -- Generate next invoice number for a given type (sale/inward)
 DROP FUNCTION IF EXISTS next_inv_no(text);
 CREATE OR REPLACE FUNCTION next_inv_no(p_type inv_sequence_type)
-RETURNS TEXT LANGUAGE plpgsql SECURITY DEFINER AS $$
+RETURNS TEXT LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
 DECLARE
   v_fy TEXT;
   v_seq INTEGER;
@@ -369,9 +369,10 @@ END;
 $$;
 
 -- Get current stock balance for an item
+-- SECURITY DEFINER so billing roles can validate stock without extra RLS grants
 CREATE OR REPLACE FUNCTION get_stock_balance(p_item_id BIGINT)
 RETURNS TABLE(item_id BIGINT, item_name TEXT, total_weight NUMERIC, total_pcs BIGINT)
-LANGUAGE SQL STABLE AS $$
+LANGUAGE SQL STABLE SECURITY DEFINER SET search_path = pg_catalog, public AS $$
   SELECT
     im.id,
     im.name,
@@ -384,10 +385,12 @@ LANGUAGE SQL STABLE AS $$
 $$;
 
 -- Get individual stock lots (purchases only — inward supply is not stock)
+-- SECURITY DEFINER so billing roles can run stock checks (salesperson has no
+-- direct purchases/item_master SELECT rights)
 DROP FUNCTION IF EXISTS get_stock_lots();
 CREATE OR REPLACE FUNCTION get_stock_lots()
 RETURNS TABLE(lot_id BIGINT, item_name TEXT, purity TEXT, huid BOOLEAN, weight NUMERIC, orig_pcs INTEGER, sold_pcs INTEGER, avail_pcs INTEGER, ref_date DATE, status TEXT, sale_inv_no TEXT)
-LANGUAGE SQL STABLE AS $$
+LANGUAGE SQL STABLE SECURITY DEFINER SET search_path = pg_catalog, public AS $$
   SELECT
     p.id, im.name, p.purity, p.huid, p.weight,
     p.pcs, p.sold_pcs, p.pcs - p.sold_pcs,
@@ -400,7 +403,7 @@ LANGUAGE SQL STABLE AS $$
     COALESCE(p.sold_inv_no, '')
   FROM purchases p
   JOIN item_master im ON im.id = p.item_id
-  ORDER BY 8 DESC, p.id DESC LIMIT 500;
+  ORDER BY 8 DESC, p.id DESC LIMIT 5000;
 $$;
 
 -- Peek next invoice number without incrementing
@@ -410,7 +413,7 @@ $$;
 -- Idempotency is keyed on invoice_item_id so that two identical lines
 -- (same item + weight + HUID) each get their own OUT ledger row.
 CREATE OR REPLACE FUNCTION process_invoice_stock(p_invoice_id BIGINT)
-RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
 DECLARE
   r RECORD;
   v_inv_no TEXT;
@@ -464,7 +467,7 @@ $$;
 -- invoice (matched via sold_inv_no), newest lot first (reverse of FIFO).
 -- This prevents corrupting identical lots sold by a different invoice.
 CREATE OR REPLACE FUNCTION reverse_invoice_stock(p_invoice_id BIGINT)
-RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
 DECLARE
   r RECORD;
   v_inv_no TEXT;
@@ -479,15 +482,22 @@ BEGIN
     AND ii.item_id IS NOT NULL
     AND (im.material_type IS DISTINCT FROM 'gold_18k')
   LOOP
-    UPDATE purchases
-    SET sold_pcs = GREATEST(sold_pcs - 1, 0),
-        is_sold = (sold_pcs - 1 >= pcs),
+    -- Decrement by the number of times THIS invoice appears in sold_inv_no,
+    -- so a lot sold 2+ pieces to the same invoice is fully released (the
+    -- per-line loop then no-ops on later identical lines).
+    UPDATE purchases p
+    SET sold_pcs = GREATEST(p.sold_pcs - (
+          SELECT COUNT(*) FROM unnest(string_to_array(p.sold_inv_no, ', ')) AS part WHERE part = v_inv_no
+        ), 0),
+        is_sold = (p.sold_pcs - (
+          SELECT COUNT(*) FROM unnest(string_to_array(p.sold_inv_no, ', ')) AS part WHERE part = v_inv_no
+        ) >= p.pcs),
         sold_inv_no = (
           SELECT COALESCE(string_agg(part, ', '), '')
-          FROM unnest(string_to_array(sold_inv_no, ', ')) AS part
+          FROM unnest(string_to_array(p.sold_inv_no, ', ')) AS part
           WHERE part != v_inv_no
         )
-    WHERE id = (
+    WHERE p.id = (
       SELECT id FROM purchases
       WHERE item_id = r.item_id
         AND weight = r.weight
@@ -505,12 +515,12 @@ $$;
 
 -- Safe delete: only allows deleting the last invoice
 CREATE OR REPLACE FUNCTION delete_invoice(p_invoice_id BIGINT)
-RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
 DECLARE
   v_max_id BIGINT;
   v_inv_no TEXT;
   v_fy TEXT;
-  v_seq INTEGER;
+  v_seq TEXT;
 BEGIN
   SELECT MAX(id) INTO v_max_id FROM invoices;
   IF p_invoice_id IS NULL OR p_invoice_id <> v_max_id THEN
@@ -524,16 +534,20 @@ BEGIN
   DELETE FROM invoice_items WHERE invoice_id = p_invoice_id;
   DELETE FROM invoices WHERE id = p_invoice_id;
 
-  -- Decrement sequence if this was the highest number
+  -- Decrement sequence if this was the highest number (only for standard
+  -- SJS/{fy}/{seq} numbers — free-text overrides must not crash the delete)
   v_fy := split_part(v_inv_no, '/', 2);
-  v_seq := split_part(v_inv_no, '/', 3)::INTEGER;
-  UPDATE inv_sequences SET last_no = last_no - 1
-  WHERE type = 'sale' AND fy = v_fy AND last_no >= v_seq AND last_no > 0;
+  v_seq := NULLIF(split_part(v_inv_no, '/', 3), '');
+  IF v_fy IS NOT NULL AND v_fy ~ '^\d{4}-\d{2}$'
+     AND v_seq IS NOT NULL AND v_seq ~ '^\d+$' THEN
+    UPDATE inv_sequences SET last_no = last_no - 1
+    WHERE type = 'sale' AND fy = v_fy AND last_no >= v_seq::INTEGER AND last_no > 0;
+  END IF;
 END;
 $$;
 
 CREATE OR REPLACE FUNCTION delete_inward_supply(p_inv_no TEXT)
-RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
 DECLARE
   v_max_id BIGINT;
   v_highest_inv_no TEXT;
@@ -555,12 +569,59 @@ BEGIN
 END;
 $$;
 
+-- Atomic create/update for inward supply vouchers. The duplicate check,
+-- delete-old-rows and insert run in ONE transaction, so a failed edit never
+-- loses the existing rows and two operators can't both create the same number.
+CREATE OR REPLACE FUNCTION save_inward_supply(p_rows JSONB, p_old_inv_no TEXT DEFAULT NULL)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
+DECLARE
+  v_inv_no TEXT;
+BEGIN
+  IF NOT has_permission('allow_billing') THEN
+    RAISE EXCEPTION 'Not authorized';
+  END IF;
+
+  SELECT MIN(r->>'inv_no') INTO v_inv_no FROM jsonb_array_elements(p_rows) r;
+  IF v_inv_no IS NULL THEN RAISE EXCEPTION 'No rows to save'; END IF;
+
+  IF p_old_inv_no IS NULL THEN
+    IF EXISTS (SELECT 1 FROM inward_supply_vouchers WHERE inv_no = v_inv_no) THEN
+      RAISE EXCEPTION 'Voucher number % is already in use', v_inv_no;
+    END IF;
+  END IF;
+
+  IF p_old_inv_no IS NOT NULL THEN
+    DELETE FROM inward_supply_vouchers WHERE inv_no = p_old_inv_no;
+  END IF;
+
+  INSERT INTO inward_supply_vouchers
+    (inv_no, customer_id, customer_name, customer_phone, item_id, weight, pcs, purity, rate, total, grand_total, date, notes, created_by)
+  SELECT
+    r->>'inv_no',
+    (r->>'customer_id')::BIGINT,
+    r->>'customer_name',
+    r->>'customer_phone',
+    (r->>'item_id')::BIGINT,
+    (r->>'weight')::NUMERIC,
+    (r->>'pcs')::INTEGER,
+    r->>'purity',
+    (r->>'rate')::NUMERIC,
+    (r->>'total')::NUMERIC,
+    (r->>'grand_total')::NUMERIC,
+    (r->>'date')::DATE,
+    r->>'notes',
+    (r->>'created_by')::BIGINT
+  FROM jsonb_array_elements(p_rows) r;
+END;
+$$;
+
 -- NOTE: stock marking is handled by process_invoice_stock() caller, not by trigger.
 -- This avoids per-row issues where multiple items with same weight/huid
 -- can't each find a matching unsold purchase lot.
 
--- ─── TRIGGER: auto-set user permissions on INSERT ──────
-
+-- ─── TRIGGER: auto-set user permissions on INSERT and ROLE CHANGE ──
+-- Fires on UPDATE OF role so a role change in SettingsPage immediately
+-- revokes/grants the matching permissions (no stale elevated access).
 CREATE OR REPLACE FUNCTION trg_set_user_permissions()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
@@ -572,7 +633,7 @@ $$;
 
 DROP TRIGGER IF EXISTS trg_set_user_permissions ON users;
 CREATE TRIGGER trg_set_user_permissions
-  BEFORE INSERT ON users
+  BEFORE INSERT OR UPDATE OF role ON users
   FOR EACH ROW EXECUTE FUNCTION trg_set_user_permissions();
 
 -- ─── TRIGGER: cascade role permission changes ──────────
@@ -593,7 +654,7 @@ CREATE TRIGGER trg_cascade_role_permissions
 -- ─── TRIGGER: log stock ledger on purchase insert ──────
 
 CREATE OR REPLACE FUNCTION trg_purchase_to_stock()
-RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER AS $$
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
 BEGIN
   INSERT INTO stock_ledger (item_id, weight, pcs, direction, source_type, reference_id, date, notes, huid)
   VALUES (NEW.item_id, NEW.weight, NEW.pcs, 'IN', 'purchase', NEW.id, NEW.date, 'Purchase: ' || COALESCE(NEW.invoice_no, ''), NEW.huid);
@@ -633,6 +694,8 @@ ALTER TABLE material_purchases DROP COLUMN IF EXISTS rate;
 ALTER TABLE material_purchases DROP COLUMN IF EXISTS amount;
 ALTER TABLE material_purchases DROP CONSTRAINT IF EXISTS material_purchases_type_check;
 ALTER TABLE material_purchases ADD CONSTRAINT material_purchases_type_check CHECK (type IN ('gold_18k', 'silver_925', 'silver_ornaments'));
+ALTER TABLE material_purchases DROP CONSTRAINT IF EXISTS chk_mp_sold_weight;
+ALTER TABLE material_purchases ADD CONSTRAINT chk_mp_sold_weight CHECK (sold_weight >= 0 AND sold_weight <= weight);
 
 CREATE INDEX IF NOT EXISTS idx_material_purchases_type ON material_purchases(type);
 
@@ -660,7 +723,7 @@ CREATE INDEX IF NOT EXISTS idx_material_sales_invoice ON material_sales(invoice_
 
 DROP FUNCTION IF EXISTS process_material_sale(bigint);
 CREATE OR REPLACE FUNCTION process_material_sale(p_invoice_id BIGINT)
-RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
 DECLARE
   v_inv_no TEXT;
   v_avail NUMERIC;
@@ -783,7 +846,7 @@ $$;
 
 DROP FUNCTION IF EXISTS reverse_material_sale(bigint);
 CREATE OR REPLACE FUNCTION reverse_material_sale(p_invoice_id BIGINT)
-RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
 DECLARE
   v_type TEXT;
   v_remaining NUMERIC;
@@ -821,7 +884,7 @@ $$;
 
 -- Helper: check if user has permission
 CREATE OR REPLACE FUNCTION has_permission(perm_name TEXT)
-RETURNS BOOLEAN LANGUAGE sql STABLE SECURITY DEFINER AS $$
+RETURNS BOOLEAN LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public AS $$
   SELECT EXISTS (
     SELECT 1 FROM users
     WHERE auth_id = auth.uid()
@@ -894,9 +957,9 @@ DO $$ BEGIN DROP POLICY IF EXISTS settings_update ON settings; END $$;
 DO $$ BEGIN DROP POLICY IF EXISTS logs_read ON logs; END $$;
 DO $$ BEGIN DROP POLICY IF EXISTS logs_write ON logs; END $$;
 
--- Item Master: read for anyone with stock_view, write for stock_edit or item_master
+-- Item Master: read for anyone who bills or manages stock, write for item_master
 CREATE POLICY item_master_read ON item_master FOR SELECT USING (
-  has_permission('allow_stock_view') OR has_permission('allow_item_master')
+  has_permission('allow_stock_view') OR has_permission('allow_item_master') OR has_permission('allow_billing')
 );
 CREATE POLICY item_master_write ON item_master FOR INSERT WITH CHECK (
   has_permission('allow_item_master')
@@ -928,22 +991,22 @@ CREATE POLICY stock_ledger_read ON stock_ledger FOR SELECT USING (
 );
 DO $$ BEGIN DROP POLICY IF EXISTS stock_ledger_insert ON stock_ledger; END $$;
 CREATE POLICY stock_ledger_insert ON stock_ledger FOR INSERT WITH CHECK (
-  has_permission('allow_stock_edit') OR has_permission('allow_billing')
+  has_permission('allow_stock_edit')
 );
 DO $$ BEGIN DROP POLICY IF EXISTS stock_ledger_update ON stock_ledger; END $$;
 CREATE POLICY stock_ledger_update ON stock_ledger FOR UPDATE USING (
-  has_permission('allow_stock_edit') OR has_permission('allow_billing')
+  has_permission('allow_stock_edit')
 );
 
--- Purchases: read/write for stock_edit
+-- Purchases: read for stock_view AND billing (stock check needs lots), write for stock_edit
 CREATE POLICY purchases_read ON purchases FOR SELECT USING (
-  has_permission('allow_stock_view')
+  has_permission('allow_stock_view') OR has_permission('allow_billing')
 );
 CREATE POLICY purchases_write ON purchases FOR INSERT WITH CHECK (
   has_permission('allow_stock_edit')
 );
 CREATE POLICY purchases_update ON purchases FOR UPDATE USING (
-  has_permission('allow_stock_edit') OR has_permission('allow_billing')
+  has_permission('allow_stock_edit')
 );
 
 -- Inward Supply: read/write for allow_billing (exchange valuation)
@@ -962,9 +1025,10 @@ CREATE POLICY inward_supply_delete ON inward_supply_vouchers FOR DELETE USING (
   has_permission('allow_billing')
 );
 
--- Invoices: read/write/update/delete for allow_billing
+-- Invoices: read for billing/reports (and stock_view so stock managers can view
+-- sale details), write/update for allow_billing
 CREATE POLICY invoices_read ON invoices FOR SELECT USING (
-  has_permission('allow_billing') OR has_permission('allow_reports')
+  has_permission('allow_billing') OR has_permission('allow_reports') OR has_permission('allow_stock_view')
 );
 CREATE POLICY invoices_write ON invoices FOR INSERT WITH CHECK (
   has_permission('allow_billing')
@@ -976,7 +1040,7 @@ DROP POLICY IF EXISTS invoices_delete ON invoices;
 
 -- Invoice items: same as invoices
 CREATE POLICY invoice_items_read ON invoice_items FOR SELECT USING (
-  has_permission('allow_billing') OR has_permission('allow_reports')
+  has_permission('allow_billing') OR has_permission('allow_reports') OR has_permission('allow_stock_view')
 );
 CREATE POLICY invoice_items_write ON invoice_items FOR INSERT WITH CHECK (
   has_permission('allow_billing')
@@ -1043,34 +1107,34 @@ CREATE POLICY settings_update ON settings FOR UPDATE USING (
   has_permission('allow_settings')
 );
 
--- Logs: owner read, insert by all
+-- Logs: owner read, insert by any signed-in user (blocks anon spam)
 CREATE POLICY logs_read ON logs FOR SELECT USING (
   has_permission('allow_settings')
 );
-CREATE POLICY logs_write ON logs FOR INSERT WITH CHECK (true);
+CREATE POLICY logs_write ON logs FOR INSERT WITH CHECK (auth.role() = 'authenticated');
 
--- Material purchases: read by billing/reports, write/update by billing
+-- Material purchases: read by billing/reports/stock_view, write/update by billing
 DROP POLICY IF EXISTS material_purchases_read ON material_purchases;
 CREATE POLICY material_purchases_read ON material_purchases FOR SELECT USING (
-  has_permission('allow_billing') OR has_permission('allow_reports')
+  has_permission('allow_billing') OR has_permission('allow_reports') OR has_permission('allow_stock_view')
 );
 DROP POLICY IF EXISTS material_purchases_write ON material_purchases;
 CREATE POLICY material_purchases_write ON material_purchases FOR INSERT WITH CHECK (
-  has_permission('allow_billing') OR has_permission('allow_stock_edit')
+  has_permission('allow_stock_edit')
 );
 DROP POLICY IF EXISTS material_purchases_update ON material_purchases;
 CREATE POLICY material_purchases_update ON material_purchases FOR UPDATE USING (
-  has_permission('allow_billing') OR has_permission('allow_stock_edit')
+  has_permission('allow_stock_edit')
 );
 DROP POLICY IF EXISTS material_purchases_delete ON material_purchases;
 CREATE POLICY material_purchases_delete ON material_purchases FOR DELETE USING (
-  has_permission('allow_billing') OR has_permission('allow_stock_edit')
+  has_permission('allow_stock_edit')
 );
 
--- Material sales: read by billing/reports, write/delete by billing
+-- Material sales: read by billing/reports/stock_view, write/delete by billing
 DROP POLICY IF EXISTS material_sales_read ON material_sales;
 CREATE POLICY material_sales_read ON material_sales FOR SELECT USING (
-  has_permission('allow_billing') OR has_permission('allow_reports')
+  has_permission('allow_billing') OR has_permission('allow_reports') OR has_permission('allow_stock_view')
 );
 DROP POLICY IF EXISTS material_sales_write ON material_sales;
 CREATE POLICY material_sales_write ON material_sales FOR INSERT WITH CHECK (

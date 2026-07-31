@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import { supabase, ROLES } from '../lib/supabase'
-import { logAction } from '../lib/audit'
+import { logAction, resetAuditUserCache } from '../lib/audit'
 
 const AuthContext = createContext(null)
 
@@ -46,7 +46,17 @@ export function AuthProvider({ children }) {
         console.warn('No user profile found. Create a row in the "users" table linked to this auth user.')
         setProfile(null)
         setPermissions({})
-        return
+        return null
+      }
+
+      // Deactivated users must not get a session — sign them out so they see
+      // the login screen instead of a broken empty app.
+      if (data.is_active === false) {
+        await supabase.auth.signOut()
+        setUser(null)
+        setProfile(null)
+        setPermissions({})
+        return null
       }
 
       let perms = {}
@@ -66,9 +76,11 @@ export function AuthProvider({ children }) {
 
       setProfile(data)
       setPermissions(perms)
+      return data
     } catch {
       setProfile(null)
       setPermissions({})
+      return null
     } finally {
       setLoading(false)
     }
@@ -80,9 +92,20 @@ export function AuthProvider({ children }) {
   }
 
   async function signIn(email, password) {
-    // fetchProfile handled by auth listener
     const { data, error } = await supabase.auth.signInWithPassword({ email, password })
     if (error) throw error
+    // Reject deactivated accounts at the login screen with a clear message.
+    const { data: row } = await supabase.from('users').select('is_active').eq('auth_id', data.user.id).maybeSingle()
+    if (row && row.is_active === false) {
+      await supabase.auth.signOut()
+      setUser(null)
+      setProfile(null)
+      setPermissions({})
+      const err = new Error('Your account has been deactivated. Contact the owner.')
+      err.deactivated = true
+      throw err
+    }
+    await fetchProfile(data.user.id)
     logAction('login', 'auth', null, { email })
     return data
   }
@@ -93,6 +116,7 @@ export function AuthProvider({ children }) {
     setUser(null)
     setProfile(null)
     setPermissions({})
+    resetAuditUserCache()
     logAction('logout', 'auth', null, {}, uid)
   }
 

@@ -5,10 +5,14 @@ import ComboBox from '../components/ComboBox'
 import { logAction } from '../lib/audit'
 import { Plus, Search, X, Edit2, Trash2 } from 'lucide-react'
 
+const PAGE_SIZE = 500
+
 export default function CustomersPage() {
   const { addToast } = useToast()
   const [customers, setCustomers] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
   const [search, setSearch] = useState('')
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState(null)
@@ -22,11 +26,25 @@ export default function CustomersPage() {
   async function loadCustomers() {
     setLoading(true)
     try {
-      const { data, error } = await supabase.from('customers').select('*').order('name')
+      const { data, error } = await supabase.from('customers').select('*').order('name').range(0, PAGE_SIZE)
       if (error) addToast('Failed to load customers', 'error')
-      setCustomers(data || [])
+      setCustomers((data || []).slice(0, PAGE_SIZE))
+      setHasMore((data || []).length > PAGE_SIZE)
     } catch (err) { addToast('Failed to load customers', 'error') }
     finally { setLoading(false) }
+  }
+
+  async function loadMore() {
+    if (loadingMore) return
+    setLoadingMore(true)
+    try {
+      const { data, error } = await supabase.from('customers').select('*').order('name').range(customers.length, customers.length + PAGE_SIZE)
+      if (error) { addToast('Failed to load customers', 'error') } else if (data) {
+        setCustomers(prev => [...prev, ...data.slice(0, PAGE_SIZE)])
+        setHasMore(data.length > PAGE_SIZE)
+      }
+    } catch (err) { addToast('Failed to load customers', 'error') }
+    finally { setLoadingMore(false) }
   }
 
   function resetForm() {
@@ -49,19 +67,22 @@ export default function CustomersPage() {
     const cleanedPhone = form.phone.trim().replace(/^\+91\s*/, '').replace(/\D/g, '')
     if (cleanedPhone.length !== 10) { addToast('Phone must be exactly 10 digits', 'error'); setSaving(false); return }
     if (!form.address.trim()) { addToast('Address is required', 'error'); setSaving(false); return }
-    const payload = { ...form, name: form.name.trim(), phone: cleanedPhone, gstin: form.gstin.trim().toUpperCase() }
-    if (editing) {
-      const { error } = await supabase.from('customers').update(payload).eq('id', editing)
-      if (error) { addToast(error.message, 'error'); setSaving(false); return }
-      addToast('Customer updated', 'success')
-      logAction('customer_updated', 'customers', editing, { name: payload.name, phone: payload.phone })
-    } else {
-      const { error } = await supabase.from('customers').insert(payload)
-      if (error) { addToast(error.message, 'error'); setSaving(false); return }
-      addToast('Customer added', 'success')
-      logAction('customer_created', 'customers', null, { name: payload.name, phone: payload.phone })
-    }
-    setSaving(false); resetForm(); loadCustomers()
+    try {
+      const payload = { ...form, name: form.name.trim(), phone: cleanedPhone, gstin: form.gstin.trim().toUpperCase() }
+      if (editing) {
+        const { error } = await supabase.from('customers').update(payload).eq('id', editing)
+        if (error) throw error
+        addToast('Customer updated', 'success')
+        logAction('customer_updated', 'customers', editing, { name: payload.name, phone: payload.phone })
+      } else {
+        const { error } = await supabase.from('customers').insert(payload)
+        if (error) throw error
+        addToast('Customer added', 'success')
+        logAction('customer_created', 'customers', null, { name: payload.name, phone: payload.phone })
+      }
+      resetForm(); loadCustomers()
+    } catch (err) { addToast(err.message || 'Failed to save customer', 'error') }
+    finally { setSaving(false) }
   }
 
   async function deleteCustomer(id, name) {
@@ -86,11 +107,14 @@ export default function CustomersPage() {
     loadCustomers()
   }
 
-  const filtered = customers.filter(c =>
-    c.name.toLowerCase().includes(search.toLowerCase()) ||
-    c.phone?.includes(search) ||
-    c.address?.toLowerCase().includes(search.toLowerCase())
-  )
+  const filtered = customers.filter(c => {
+    const q = search.toLowerCase()
+    const digits = search.trim().replace(/^\+91\s*/, '').replace(/\D/g, '')
+    return c.name.toLowerCase().includes(q) ||
+      c.phone?.includes(search) ||
+      c.phone?.includes(digits) ||
+      c.address?.toLowerCase().includes(q)
+  })
 
   if (loading) return <div className="page"><div className="page-header"><h2>Customers</h2></div><div className="loading-center"><div className="spinner" /></div></div>
 
@@ -152,6 +176,14 @@ export default function CustomersPage() {
           </tbody>
         </table>
       </div>
+
+      {hasMore && (
+        <div style={{ textAlign: 'center', padding: '1rem' }}>
+          <button className="btn btn-outline" onClick={loadMore} disabled={loadingMore}>
+            {loadingMore ? 'Loading...' : 'Load more customers'}
+          </button>
+        </div>
+      )}
 
       {showForm && (
         <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) resetForm() }}>

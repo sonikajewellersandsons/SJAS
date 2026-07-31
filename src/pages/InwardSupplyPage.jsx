@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import { useToast } from '../components/Toast'
 import ComboBox from '../components/ComboBox'
 import { logAction } from '../lib/audit'
+import { financialYear, fyFromInvNo, invNoSeq } from '../lib/format'
 import { Plus, Search, X, Eye, Trash2, RotateCcw, Edit3 } from 'lucide-react'
 
 function fmt(n) {
@@ -103,15 +104,13 @@ export default function InwardSupplyPage() {
 
   // Inv no generation
   async function getFy() {
-    const today = new Date()
-    const y = today.getFullYear()
-    const m = today.getMonth() + 1
-    return m >= 4 ? `${y}-${(y + 1).toString().slice(-2)}` : `${y - 1}-${y.toString().slice(-2)}`
+    return financialYear()
   }
 
   async function generateInvNo() {
     const fy = await getFy()
-    const { data: existing } = await supabase.from('inward_supply_vouchers').select('inv_no').ilike('inv_no', `SJS/IWS/${fy}/%`).order('inv_no')
+    const { data: existing, error } = await supabase.from('inward_supply_vouchers').select('inv_no').ilike('inv_no', `SJS/IWS/${fy}/%`).order('inv_no')
+    if (error) throw error
     const used = (existing || []).map(v => parseInt(v.inv_no.split('/').pop())).filter(n => !isNaN(n)).sort((a, b) => a - b)
     let next = 1
     for (const n of used) {
@@ -125,7 +124,12 @@ export default function InwardSupplyPage() {
   }
 
   async function openCreateForm() {
-    await generateInvNo()
+    try {
+      await generateInvNo()
+    } catch (err) {
+      addToast('Could not generate voucher number', 'error')
+      return
+    }
     setEditMode(false)
     setEditInvNo(null)
     setDate(new Date().toISOString().split('T')[0])
@@ -155,36 +159,38 @@ export default function InwardSupplyPage() {
   }
 
   async function loadEditVoucher(invNoToEdit) {
-    const { data, error } = await supabase
-      .from('inward_supply_vouchers')
-      .select('*, item_master!left(name)')
-      .eq('inv_no', invNoToEdit)
-      .order('id')
-    if (error || !data || data.length === 0) { addToast('Voucher not found', 'error'); return }
+    try {
+      const { data, error } = await supabase
+        .from('inward_supply_vouchers')
+        .select('*, item_master!left(name)')
+        .eq('inv_no', invNoToEdit)
+        .order('id')
+      if (error || !data || data.length === 0) { addToast('Voucher not found', 'error'); return }
 
-    const first = data[0]
-    setEditMode(true)
-    setEditInvNo(invNoToEdit)
-    setInvNo(first.inv_no)
-    setDate(first.date)
-    setNotes(first.notes || '')
-    setAadhaarInput('')
+      const first = data[0]
+      setEditMode(true)
+      setEditInvNo(invNoToEdit)
+      setInvNo(first.inv_no)
+      setDate(first.date)
+      setNotes(first.notes || '')
+      setAadhaarInput('')
 
-    const cust = customers.find(c => c.id === first.customer_id)
-    setSelectedCustomer(cust || null)
+      const cust = customers.find(c => c.id === first.customer_id)
+      setSelectedCustomer(cust || null)
 
-    const items = data.map(d => {
-      const metal = metalItems.find(m => m.id === d.item_id)
-      return {
-        metal: metal ? metal.name.toLowerCase() : 'gold',
-        purity: d.purity,
-        weight: d.weight.toString(),
-        pcs: d.pcs.toString(),
-        rate: d.rate.toString(),
-      }
-    })
-    setLineItems(items)
-    setShowForm(true)
+      const items = data.map(d => {
+        const metal = metalItems.find(m => m.id === d.item_id)
+        return {
+          metal: metal ? metal.name.toLowerCase() : 'gold',
+          purity: d.purity,
+          weight: d.weight.toString(),
+          pcs: d.pcs.toString(),
+          rate: d.rate.toString(),
+        }
+      })
+      setLineItems(items)
+      setShowForm(true)
+    } catch (err) { addToast('Failed to load voucher', 'error') }
   }
 
   // Items
@@ -227,16 +233,6 @@ export default function InwardSupplyPage() {
     const validLines = lineItems.filter(l => l.metal && parseFloat(l.weight) > 0)
     if (validLines.length === 0) { addToast('Add at least one item with weight', 'error'); return }
 
-    // Number collision guard (create only — edit keeps its own number)
-    if (!editMode) {
-      const { data: dup } = await supabase.from('inward_supply_vouchers').select('inv_no').eq('inv_no', invNo).limit(1)
-      if (dup && dup.length > 0) {
-        addToast(`Voucher number ${invNo} is already in use.`, 'error')
-        await generateInvNo()
-        return
-      }
-    }
-
     setSaving(true)
     try {
       const rows = validLines.map((line) => {
@@ -264,35 +260,31 @@ export default function InwardSupplyPage() {
 
       const finalRows = rows.map(r => ({ ...r, grand_total: Math.round(grandTotal * 100) / 100 }))
 
-      if (editMode && editInvNo) {
-        // Delete old rows first, then insert new — inv_no is NOT unique (one
-        // voucher spans multiple rows), so insert-first would collide with the
-        // existing rows and delete-after would wipe the freshly inserted ones.
-        const { error: delErr } = await supabase.from('inward_supply_vouchers').delete().eq('inv_no', editInvNo)
-        if (delErr) throw new Error(delErr.message)
-        const { error: insErr } = await supabase.from('inward_supply_vouchers').insert(finalRows)
-        if (insErr) throw new Error(insErr.message)
-        addToast(`Voucher ${editInvNo} updated`, 'success')
-        logAction('voucher_updated', 'inward_supply_vouchers', null, { inv_no: editInvNo, grand_total: grandTotal })
-      } else {
-        const { error } = await supabase.from('inward_supply_vouchers').insert(finalRows)
-        if (error) throw error
+      // Atomic save via RPC: duplicate check + delete-old + insert in one
+      // transaction, so an edit failure never loses the existing rows and two
+      // operators can't both create the same voucher number.
+      const { error } = await supabase.rpc('save_inward_supply', {
+        p_rows: finalRows,
+        p_old_inv_no: (editMode && editInvNo) ? editInvNo : null,
+      })
+      if (error) throw error
 
-        // Update inv_sequences
-        const seqMatch = invNo.match(/\/(\d+)$/)
-        if (seqMatch) {
-          const seqNum = parseInt(seqMatch[1])
-          const fy = await getFy()
-          const { data: cur } = await supabase.from('inv_sequences').select('last_no').eq('type', 'inward').eq('fy', fy).maybeSingle()
+      // Update inv_sequences (create only) — use the FY embedded in the number
+      if (!editMode) {
+        const seqNum = invNoSeq(invNo)
+        const fyFromNumber = fyFromInvNo(invNo)
+        if (seqNum !== null && fyFromNumber) {
+          const { data: cur } = await supabase.from('inv_sequences').select('last_no').eq('type', 'inward').eq('fy', fyFromNumber).maybeSingle()
           const curNo = cur ? parseInt(cur.last_no) || 0 : 0
           if (seqNum > curNo) {
-            const { error: seqErr } = await supabase.from('inv_sequences').upsert({ type: 'inward', fy, last_no: seqNum }, { onConflict: 'type,fy' })
+            const { error: seqErr } = await supabase.from('inv_sequences').upsert({ type: 'inward', fy: fyFromNumber, last_no: seqNum }, { onConflict: 'type,fy' })
             if (seqErr) console.warn('Sequence update failed (non-critical):', seqErr.message)
           }
         }
-        addToast(`Voucher ${invNo} created`, 'success')
-        logAction('voucher_created', 'inward_supply_vouchers', null, { inv_no: invNo, grand_total: grandTotal })
       }
+
+      addToast(editMode ? `Voucher ${editInvNo} updated` : `Voucher ${invNo} created`, 'success')
+      logAction(editMode ? 'voucher_updated' : 'voucher_created', 'inward_supply_vouchers', null, { inv_no: editMode ? editInvNo : invNo, grand_total: grandTotal })
 
       setShowForm(false)
       loadData()
@@ -304,15 +296,17 @@ export default function InwardSupplyPage() {
   }
 
   async function viewDetails(invNoToView) {
-    const { data, error } = await supabase
-      .from('inward_supply_vouchers')
-      .select('*, item_master!left(name)')
-      .eq('inv_no', invNoToView)
-      .order('id')
-    if (error || !data || data.length === 0) { addToast('Voucher not found', 'error'); return }
-    setViewVoucher(data[0])
-    setViewItems(data)
-    setShowModal(true)
+    try {
+      const { data, error } = await supabase
+        .from('inward_supply_vouchers')
+        .select('*, item_master!left(name)')
+        .eq('inv_no', invNoToView)
+        .order('id')
+      if (error || !data || data.length === 0) { addToast('Voucher not found', 'error'); return }
+      setViewVoucher(data[0])
+      setViewItems(data)
+      setShowModal(true)
+    } catch (err) { addToast('Failed to load voucher', 'error') }
   }
 
   async function deleteVoucher(invNoToDel) {

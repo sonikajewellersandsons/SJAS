@@ -15,6 +15,12 @@ async function resolveUserId() {
   }
 }
 
+// Call after sign-out so the next login (same page session) isn't attributed
+// to the previous user.
+export function resetAuditUserCache() {
+  cachedUserId = null
+}
+
 // Fire-and-forget audit trail. Never throws, never blocks the caller.
 // Pass userId explicitly when the auth session may already be cleared (e.g. logout).
 export async function logAction(action, tableName = '', recordId = null, details = {}, userId = null) {

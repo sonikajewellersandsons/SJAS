@@ -375,3 +375,58 @@ Fix BillingPage performance (slow load/re-render), edit-mode stock validation fo
 
 **RLS fix:**
 - `settings_read` policy was owner-only, blocking accountants (reports) and salespeople (billing) from reading `shop_state`/`gold_rate`. Now `allow_settings OR allow_billing OR allow_reports`. Write stays owner-only. Deploy by re-running `sql/schema.sql` (idempotent).
+
+## Added (August 2026 — Production-Ready Audit & Fixes)
+
+**CRITICAL: BillingPage edit-save rewritten** (`src/pages/BillingPage.jsx`):
+- **C1 — edit save destroyed line items**: new items were inserted with `invoice_id = invId`, then `delete().eq('invoice_id', invId)` removed **all** rows (old AND new) → every edit left the invoice with zero items and released stock. Now deletes old rows **by their ids** (`.in('id', oldIds)`) after inserting new.
+- **C2 — early return after stock reversal**: a bare `return` on a new-customer name error ran *after* `reverse_material_sale`/`reverse_invoice_stock`, permanently releasing stock. Customer resolution (incl. name validation) now runs **before** any reversal.
+- **Wrong-direction recovery**: the catch block called `reverse_material_sale` again (double-restored `sold_weight`). Now on failure the edit is **fully restored**: old items re-inserted, header restored from snapshot, and stock re-processed (`process_invoice_stock` + `process_material_sale`).
+- **Create-mode orphan invoices**: failed create-mode saves now clean up via the `delete_invoice` RPC (the direct `invoices.delete()` was RLS-denied, leaving empty orphan rows that blocked the last-invoice delete).
+- **M2**: a phone-matched customer no longer stores the *typed* name/address in the header — the DB record's details are used.
+- **H3**: manual invoice numbers from another FY no longer corrupt the current FY sequence (`fyFromInvNo`/`invNoSeq` from `src/lib/format.js`).
+- **H4**: silver/18K `tax_pct` is preserved on edit reload (was hardcoded to `'0'`).
+- **L1**: `resetForm` re-autofills the gold rate (price calculator → settings) and clears the custom-rate flag.
+- Post-save refresh/reset failures no longer roll back a committed save.
+
+**RLS / RPC fixes** (`sql/schema.sql`):
+- Salesperson billing unblocked: `item_master_read` + `purchases_read` now include `allow_billing`; `get_stock_lots()`/`get_stock_balance()` are now `SECURITY DEFINER`.
+- Materials readable by stock_manager: `material_purchases_read`/`material_sales_read` include `allow_stock_view`; StockPage sale-details modal unblocked via `invoices_read`/`invoice_items_read` + `allow_stock_view`.
+- Write-locking tightened: removed `allow_billing` from `stock_ledger_insert/update`, `purchases_update`, `material_purchases_write/update/delete` (all stock mutations go through SECURITY DEFINER RPCs).
+- **`reverse_invoice_stock`** decrements `sold_pcs` by the *count* of invoice occurrences in `sold_inv_no` — fixes under-reversal when an invoice sells 2+ pieces from one lot.
+- **`delete_invoice`** guards non-standard inv numbers (regex on `{fy}`/`{seq}`) so free-text overrides can't crash deletion.
+- **Role change updates permissions**: `trg_set_user_permissions` now fires on `BEFORE INSERT OR UPDATE OF role` (SettingsPage role changes no longer leave stale/elevated access).
+- `material_purchases` gets `chk_mp_sold_weight CHECK (sold_weight >= 0 AND sold_weight <= weight)` (concurrency oversell guard).
+- `logs_write` restricted to `auth.role() = 'authenticated'` (anon spam blocked).
+- `has_permission` + all SECURITY DEFINER functions now set `search_path = pg_catalog, public`.
+- **New RPC `save_inward_supply(p_rows JSONB, p_old_inv_no TEXT)`** — atomic duplicate-check + delete-old + insert for inward vouchers (fixes the delete-then-insert data-loss window and the non-atomic number race). `InwardSupplyPage` now uses it.
+
+**PDF edge function** (`generate-invoice-pdf`):
+- Prefers invoice-time snapshot (`inv.customer_*`) over the live customer row, so reprints never change.
+- Seller state code falls back to `stateCode(shop_state)` (was hardcoded `'07'` Delhi); buyer state prefers `customer_gstin`.
+- HSN summary "Total" now equals the sum of HSN rows (was pre-discount `subtotal + totalHc`, wrong on discounted invoices).
+- `daman & diu` code fixed to `26`; `shop_city` fallback `Faridabad`.
+
+**Robustness across pages:**
+- ReportsPage: drill-down end-date built from strings (`monthEndDate`) — was `toISOString()` dropping the last day of the month in UTC+ timezones; HsnSummary/CustomerReport/OthersReport got try/catch + `.error` checks + cancellation guards; `'delhi'` → `'haryana'` fallbacks.
+- SalesPage + SettingsPage (4 tabs): loaders wrapped in try/catch/finally (no more stuck spinners).
+- CustomersPage: paginated (500/page, Load more), `+91`-aware phone search, save try/catch.
+- MaterialPage: purchase history paginated, tab-switch race guarded via `typeRef`, stock card totals from a dedicated aggregate query (correct regardless of pagination), Add/Edit/Delete gated on `allow_stock_edit`.
+- InwardSupplyPage: `generateInvNo`/`openCreateForm`/`loadEditVoucher`/`viewDetails` error-handled (no silent dead buttons).
+- BillingPage: `checkStock` aggregates available pcs across **all** matching lots (false "out of stock" when multiple identical lots exist).
+- StockPage: purchase quantity validated (`min 1` — `0` was silently saved as `1`).
+- AuthContext: deactivated users are signed out and rejected at login with a clear message; audit user-id cache reset on logout (`resetAuditUserCache`).
+- Toast: unique ids via counter (was `Date.now()` collision).
+- RouteErrorBoundary: `key={location.pathname}` resets the error state on navigation.
+- `src/lib/csv.js`: CSV formula-injection guard (`= + - @` prefixed) and `\r` quoting.
+- `src/lib/format.js`: extracted pure helpers (`fmt`, `num`, `cleanPhone`, `financialYear`, `fyFromInvNo`, `invNoSeq`, `monthEndDate`).
+
+**Tests (NEW — Vitest + Testing Library):**
+- `npm test` → `vitest run`. 28 tests in `src/lib/format.test.js`, `src/lib/csv.test.js`, `src/lib/audit.test.js`, and `src/pages/BillingPage.test.jsx`.
+- The BillingPage integration test locks in the C1 fix: edit-save deletes old items by `.in('id', [..])`, never by `.eq('invoice_id', ..)`, and runs both stock RPCs.
+- Deps: `vitest`, `jsdom`, `@testing-library/react`, `@testing-library/jest-dom`, `@testing-library/user-event`. Config in `vite.config.js` (`test` block) + `src/test/setup.js` (jsdom localStorage polyfill).
+
+**Deploy steps (manual, after re-running `sql/schema.sql`):**
+1. Re-run `sql/schema.sql` in the Supabase SQL Editor (idempotent).
+2. `npx supabase functions deploy generate-invoice-pdf` (PDF snapshot/HSN fixes).
+3. `npm run build` → deploy `dist/` to Vercel.

@@ -117,18 +117,18 @@ function isActive(path) {
       {/* Main content */}
       <main className="main-content">
         <Routes>
-          <Route path="/" element={<RouteErrorBoundary>{hasPermission('allow_reports') ? <DashboardPage /> : <Navigate to="/profile" replace />}</RouteErrorBoundary>} />
-          <Route path="/price-calculator" element={<RouteErrorBoundary><PriceCalculatorPage /></RouteErrorBoundary>} />
-          <Route path="/stock" element={<RouteErrorBoundary>{hasPermission('allow_stock_view') ? <StockPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
-          <Route path="/customers" element={<RouteErrorBoundary>{hasPermission('allow_customers') ? <CustomersPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
-          <Route path="/billing" element={<RouteErrorBoundary>{hasPermission('allow_billing') ? <BillingPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
-          <Route path="/invoices" element={<RouteErrorBoundary>{hasPermission('allow_billing') ? <InvoiceHistoryPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
-          <Route path="/inward-supply" element={<RouteErrorBoundary>{hasPermission('allow_billing') ? <InwardSupplyPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
-          <Route path="/materials" element={<RouteErrorBoundary>{hasPermission('allow_stock_view') ? <MaterialPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
-          <Route path="/sales" element={<RouteErrorBoundary>{hasPermission('allow_reports') ? <SalesPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
-          <Route path="/reports" element={<RouteErrorBoundary>{hasPermission('allow_reports') ? <ReportsPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
-          <Route path="/settings" element={<RouteErrorBoundary>{hasPermission('allow_settings') ? <SettingsPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
-          <Route path="/profile" element={<RouteErrorBoundary><ProfilePage /></RouteErrorBoundary>} />
+          <Route path="/" element={<RouteErrorBoundary key={location.pathname}>{hasPermission('allow_reports') ? <DashboardPage /> : <Navigate to="/profile" replace />}</RouteErrorBoundary>} />
+          <Route path="/price-calculator" element={<RouteErrorBoundary key={location.pathname}><PriceCalculatorPage /></RouteErrorBoundary>} />
+          <Route path="/stock" element={<RouteErrorBoundary key={location.pathname}>{hasPermission('allow_stock_view') ? <StockPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
+          <Route path="/customers" element={<RouteErrorBoundary key={location.pathname}>{hasPermission('allow_customers') ? <CustomersPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
+          <Route path="/billing" element={<RouteErrorBoundary key={location.pathname}>{hasPermission('allow_billing') ? <BillingPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
+          <Route path="/invoices" element={<RouteErrorBoundary key={location.pathname}>{hasPermission('allow_billing') ? <InvoiceHistoryPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
+          <Route path="/inward-supply" element={<RouteErrorBoundary key={location.pathname}>{hasPermission('allow_billing') ? <InwardSupplyPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
+          <Route path="/materials" element={<RouteErrorBoundary key={location.pathname}>{hasPermission('allow_stock_view') ? <MaterialPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
+          <Route path="/sales" element={<RouteErrorBoundary key={location.pathname}>{hasPermission('allow_reports') ? <SalesPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
+          <Route path="/reports" element={<RouteErrorBoundary key={location.pathname}>{hasPermission('allow_reports') ? <ReportsPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
+          <Route path="/settings" element={<RouteErrorBoundary key={location.pathname}>{hasPermission('allow_settings') ? <SettingsPage /> : <Navigate to="/" replace />}</RouteErrorBoundary>} />
+          <Route path="/profile" element={<RouteErrorBoundary key={location.pathname}><ProfilePage /></RouteErrorBoundary>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback } from 'react'
+import { createContext, useContext, useState, useCallback, useRef } from 'react'
 import { X, CheckCircle, AlertCircle, AlertTriangle, Info } from 'lucide-react'
 
 const ToastContext = createContext(null)
@@ -12,9 +12,11 @@ const icons = {
 
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([])
+  const idRef = useRef(0)
 
   const addToast = useCallback((message, type = 'info', duration = 3500) => {
-    const id = Date.now()
+    idRef.current += 1
+    const id = idRef.current
     setToasts(prev => [...prev, { id, message, type }])
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), duration)
   }, [])

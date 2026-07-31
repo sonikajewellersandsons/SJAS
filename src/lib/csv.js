@@ -3,8 +3,12 @@
 
 function esc(value) {
   if (value == null) return ''
-  const s = String(value)
-  if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"'
+  let s = String(value)
+  // Defend against CSV formula injection: values starting with = + - @ are
+  // treated by Excel as formulas. Prefixing with a single quote renders them
+  // as plain text.
+  if (/^[=+\-@]/.test(s)) s = "'" + s
+  if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"'
   return s
 }
 

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../components/Toast'
@@ -50,30 +50,46 @@ function MaterialDashboard({ type }) {
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [hasMore, setHasMore] = useState(false)
+  const [hasMorePurchases, setHasMorePurchases] = useState(false)
+  const [totalWeight, setTotalWeight] = useState(0)
+  const [soldWeight, setSoldWeight] = useState(0)
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(null)
   const [deleting, setDeleting] = useState(false)
   const [form, setForm] = useState({ date: new Date().toISOString().split('T')[0], supplier: '', weight: '', notes: '' })
 
+  // Guards against a slow query for a previous tab overwriting the current one
+  const typeRef = useRef(type)
+  useEffect(() => { typeRef.current = type }, [type])
+
   useEffect(() => { loadData() }, [type])
 
   async function loadData() {
+    const reqType = type
     setLoading(true)
     try {
-      const [pRes, sRes] = await Promise.all([
-        supabase.from('material_purchases').select('*').eq('type', type).order('date', { ascending: false }),
+      const [pRes, sRes, stockRes] = await Promise.all([
+        supabase.from('material_purchases').select('*').eq('type', type).order('date', { ascending: false }).range(0, 200),
         supabase.from('material_sales').select('*').eq('type', type).order('created_at', { ascending: false }).order('id', { ascending: false }).range(0, 200),
+        supabase.from('material_purchases').select('weight, sold_weight').eq('type', type),
       ])
+      if (typeRef.current !== reqType) return
       if (pRes.error) addToast('Failed to load purchases', 'error')
       if (sRes.error) addToast('Failed to load sales', 'error')
-      if (pRes.data) setPurchases(pRes.data)
+      if (stockRes.error) addToast('Failed to load stock', 'error')
+      if (pRes.data) setPurchases(pRes.data.slice(0, 200))
       if (sRes.data) setSales(sRes.data.slice(0, 200))
       setHasMore((sRes.data || []).length > 200)
+      setHasMorePurchases((pRes.data || []).length > 200)
+      if (stockRes.data) {
+        setTotalWeight(stockRes.data.reduce((s, p) => s + parseFloat(p.weight), 0))
+        setSoldWeight(stockRes.data.reduce((s, p) => s + parseFloat(p.sold_weight ?? 0), 0))
+      }
     } catch (err) {
       addToast('Failed to load data', 'error')
     }
-    setLoading(false)
+    if (typeRef.current === reqType) setLoading(false)
   }
 
   async function loadMoreSales() {
@@ -95,8 +111,24 @@ function MaterialDashboard({ type }) {
     finally { setLoadingMore(false) }
   }
 
-  const totalWeight = purchases.reduce((s, p) => s + parseFloat(p.weight), 0)
-  const soldWeight = purchases.reduce((s, p) => s + parseFloat(p.sold_weight ?? 0), 0)
+  async function loadMorePurchases() {
+    if (loadingMore) return
+    setLoadingMore(true)
+    try {
+      const { data, error } = await supabase
+        .from('material_purchases')
+        .select('*')
+        .eq('type', type)
+        .order('date', { ascending: false })
+        .range(purchases.length, purchases.length + 200)
+      if (error) { addToast('Failed to load purchases', 'error') } else if (data) {
+        setPurchases(prev => [...prev, ...data.slice(0, 200)])
+        setHasMorePurchases(data.length > 200)
+      }
+    } catch (err) { addToast('Failed to load purchases', 'error') }
+    finally { setLoadingMore(false) }
+  }
+
   const availWeight = totalWeight - soldWeight
 
   async function savePurchase(e) {
@@ -198,7 +230,7 @@ function MaterialDashboard({ type }) {
         </div>
       </div>
 
-      {!showForm && (
+      {!showForm && canEdit && (
         <button className="btn btn-primary btn-full" style={{ marginBottom: '1rem' }} onClick={startNew}>
           <Plus size={16} /> Add Purchase
         </button>
@@ -265,18 +297,29 @@ function MaterialDashboard({ type }) {
                     <td style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{p.notes || '—'}</td>
                     <td>
                       <div style={{ display: 'flex', gap: '4px' }}>
-                        <button className="btn btn-sm btn-outline" title="Edit" onClick={() => startEdit(p)} disabled={(parseFloat(p.sold_weight) || 0) > 0}>
-                          <Pencil size={12} />
-                        </button>
-                        <button className="btn btn-sm btn-outline" style={{ color: 'var(--red)' }} title="Delete" onClick={() => setConfirmDelete(p.id)} disabled={(parseFloat(p.sold_weight) || 0) > 0}>
-                          <Trash2 size={12} />
-                        </button>
+                        {canEdit && (
+                          <>
+                            <button className="btn btn-sm btn-outline" title="Edit" onClick={() => startEdit(p)} disabled={(parseFloat(p.sold_weight) || 0) > 0}>
+                              <Pencil size={12} />
+                            </button>
+                            <button className="btn btn-sm btn-outline" style={{ color: 'var(--red)' }} title="Delete" onClick={() => setConfirmDelete(p.id)} disabled={(parseFloat(p.sold_weight) || 0) > 0}>
+                              <Trash2 size={12} />
+                            </button>
+                          </>
+                        )}
                       </div>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+        {hasMorePurchases && (
+          <div style={{ textAlign: 'center', padding: '0.75rem' }}>
+            <button className="btn btn-sm btn-outline" onClick={loadMorePurchases} disabled={loadingMore}>
+              {loadingMore ? 'Loading...' : 'Load more purchases'}
+            </button>
           </div>
         )}
       </div>
