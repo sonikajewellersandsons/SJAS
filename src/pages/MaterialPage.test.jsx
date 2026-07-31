@@ -106,13 +106,28 @@ describe('MaterialPage CRUD', () => {
     expect(state.updated).toMatchObject({ id: 1, weight: 120, type: 'gold_18k' })
   })
 
-  it('disables edit/delete on a lot that has been sold', async () => {
+  it('allows editing a sold lot but keeps delete disabled', async () => {
     render(<ToastProvider><MaterialPage /></ToastProvider>)
     await screen.findByText('Ram Traders')
-    // Ram Traders (sold_weight 0) editable; Shyam Traders (sold 50/50) not
+    // Both lots are editable (Ram: unsold, Shyam: fully sold)
     const editButtons = screen.getAllByTitle('Edit')
     expect(editButtons[0]).not.toBeDisabled()
-    expect(editButtons[1]).toBeDisabled()
+    expect(editButtons[1]).not.toBeDisabled()
+    // Delete stays disabled on a sold lot
+    const deleteButtons = screen.getAllByTitle(/Delete/)
+    expect(deleteButtons[0]).not.toBeDisabled()
+    expect(deleteButtons[1]).toBeDisabled()
+  })
+
+  it('blocks reducing a sold lot below its sold weight', async () => {
+    render(<ToastProvider><MaterialPage /></ToastProvider>)
+    await screen.findByText('Ram Traders')
+    // Edit Shyam Traders (sold 50/50) and try to reduce below 50g
+    fireEvent.click(screen.getAllByTitle('Edit')[1])
+    fireEvent.change(screen.getByPlaceholderText('0.000'), { target: { value: '40' } })
+    fireEvent.click(screen.getByRole('button', { name: /Update/i }))
+    expect(await screen.findByText(/cannot be reduced below sold/i)).toBeInTheDocument()
+    expect(state.updated).toBeNull()
   })
 
   it('deletes a purchase after confirmation', async () => {

@@ -438,4 +438,7 @@ Fix BillingPage performance (slow load/re-render), edit-mode stock validation fo
   - `material_purchases.type` / `material_sales.type` `'silver'` → `'silver_925'`
   - `sold_weight` clamped to `weight`, `sold_pcs` clamped to `pcs`
 - **Read-only notice** added to MaterialPage when the role can view but lacks `allow_stock_edit` (accountant), so it's clear why Add/Edit/Delete are hidden.
+- **Edit now allowed on sold lots** (silver_925 / gold_18k / silver_ornaments): previously the Edit button was disabled whenever `sold_weight > 0`, so lots that had been sold via billing could never be corrected. It is safe because `savePurchase` already blocks reducing weight below `sold_weight` (protecting `chk_mp_sold_weight`). The edit form shows "Sold so far: X g".
+- **Delete stays disabled on sold lots** (deleting a consumed lot corrupts the material ledger) — the button now has a tooltip explaining to delete the linked invoices first.
+- **Tab-switch guard**: switching material tabs mid-edit now closes the form/confirm so an edit can never apply a row from another type.
 - Permission model for materials (route = `allow_stock_view`, CRUD = `allow_stock_edit`): owner & stock_manager full CRUD, accountant read-only, salesperson no access.

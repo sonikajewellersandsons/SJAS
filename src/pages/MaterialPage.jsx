@@ -63,7 +63,14 @@ function MaterialDashboard({ type }) {
   const typeRef = useRef(type)
   useEffect(() => { typeRef.current = type }, [type])
 
-  useEffect(() => { loadData() }, [type])
+  useEffect(() => {
+    // Switching tabs mid-edit would try to update a row from another type —
+    // close any open form/confirm so edits never leak across tabs.
+    setShowForm(false)
+    setEditingId(null)
+    setConfirmDelete(null)
+    loadData()
+  }, [type])
 
   async function loadData() {
     const reqType = type
@@ -130,6 +137,7 @@ function MaterialDashboard({ type }) {
   }
 
   const availWeight = totalWeight - soldWeight
+  const soldOfEditing = editingId ? (parseFloat(purchases.find(p => p.id === editingId)?.sold_weight) || 0) : 0
 
   async function savePurchase(e) {
     e.preventDefault()
@@ -246,6 +254,11 @@ function MaterialDashboard({ type }) {
         <div className="card" style={{ marginBottom: '1rem' }}>
           <div className="card-header"><h3 className="card-title">{editingId ? 'Edit Purchase' : 'New Purchase'}</h3></div>
           <form onSubmit={savePurchase} style={{ padding: '0.75rem 1rem' }}>
+            {editingId && (
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
+                Sold so far: {fmtW(soldOfEditing)} g — weight cannot be reduced below this.
+              </div>
+            )}
             <div className="form-row">
               <div className="form-group">
                 <label className="label">Date</label>
@@ -305,10 +318,20 @@ function MaterialDashboard({ type }) {
                       <div style={{ display: 'flex', gap: '4px' }}>
                         {canEdit && (
                           <>
-                            <button className="btn btn-sm btn-outline" title="Edit" onClick={() => startEdit(p)} disabled={(parseFloat(p.sold_weight) || 0) > 0}>
+                            {/* Edit is allowed even for sold lots — the save
+                                validation blocks reducing weight below sold. */}
+                            <button className="btn btn-sm btn-outline" title="Edit" onClick={() => startEdit(p)}>
                               <Pencil size={12} />
                             </button>
-                            <button className="btn btn-sm btn-outline" style={{ color: 'var(--red)' }} title="Delete" onClick={() => setConfirmDelete(p.id)} disabled={(parseFloat(p.sold_weight) || 0) > 0}>
+                            <button
+                              className="btn btn-sm btn-outline"
+                              style={{ color: 'var(--red)' }}
+                              title={(parseFloat(p.sold_weight) || 0) > 0
+                                ? 'Delete disabled — this lot has sales. Delete the linked invoices first to release its weight.'
+                                : 'Delete'}
+                              onClick={() => setConfirmDelete(p.id)}
+                              disabled={(parseFloat(p.sold_weight) || 0) > 0}
+                            >
                               <Trash2 size={12} />
                             </button>
                           </>
