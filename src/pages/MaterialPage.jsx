@@ -230,6 +230,12 @@ function MaterialDashboard({ type }) {
         </div>
       </div>
 
+      {!canEdit && (
+        <div style={{ marginBottom: '1rem', padding: '0.6rem 1rem', background: 'rgba(13,60,97,0.08)', borderRadius: 'var(--radius)', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+          You have read-only access to materials. Contact the owner to add or edit purchases.
+        </div>
+      )}
+
       {!showForm && canEdit && (
         <button className="btn btn-primary btn-full" style={{ marginBottom: '1rem' }} onClick={startNew}>
           <Plus size={16} /> Add Purchase

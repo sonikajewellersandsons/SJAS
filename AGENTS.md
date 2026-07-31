@@ -430,3 +430,12 @@ Fix BillingPage performance (slow load/re-render), edit-mode stock validation fo
 1. Re-run `sql/schema.sql` in the Supabase SQL Editor (idempotent).
 2. `npx supabase functions deploy generate-invoice-pdf` (PDF snapshot/HSN fixes).
 3. `npm run build` → deploy `dist/` to Vercel.
+
+### Materials Page CRUD fix (Aug 2026)
+- **Verified CRUD logic** with a new integration suite (`src/pages/MaterialPage.test.jsx`, 6 tests): load, add, edit, sold-lot guard, delete-after-confirm, and RLS-denied error toast all pass.
+- **Root cause of "materials CRUD not working" was a deploy abort, not the page**: if `schema.sql` fails partway (e.g. legacy `type='silver'` rows blocking the `type` CHECK, or `sold_weight > weight` blocking `chk_mp_sold_weight`), every statement **after** the failure never runs — including the RLS read-policy fix that lets stock_manager/accountant *see* materials. Symptoms: add/edit appears to work but the list stays empty.
+- **Fix in `schema.sql`**: defensive data migrations run *before* the CHECK constraints so re-runs never abort:
+  - `material_purchases.type` / `material_sales.type` `'silver'` → `'silver_925'`
+  - `sold_weight` clamped to `weight`, `sold_pcs` clamped to `pcs`
+- **Read-only notice** added to MaterialPage when the role can view but lacks `allow_stock_edit` (accountant), so it's clear why Add/Edit/Delete are hidden.
+- Permission model for materials (route = `allow_stock_view`, CRUD = `allow_stock_edit`): owner & stock_manager full CRUD, accountant read-only, salesperson no access.

@@ -144,6 +144,8 @@ ALTER TABLE purchases ADD COLUMN IF NOT EXISTS is_sold BOOLEAN NOT NULL DEFAULT 
 ALTER TABLE purchases ADD COLUMN IF NOT EXISTS sold_inv_no TEXT DEFAULT '';
 ALTER TABLE purchases ADD COLUMN IF NOT EXISTS sold_pcs INTEGER NOT NULL DEFAULT 0;
 
+-- Clamp legacy oversold data so the CHECK below never aborts schema.sql
+UPDATE purchases SET sold_pcs = LEAST(sold_pcs, pcs) WHERE sold_pcs > pcs;
 ALTER TABLE purchases DROP CONSTRAINT IF EXISTS chk_sold_pcs;
 ALTER TABLE purchases ADD CONSTRAINT chk_sold_pcs CHECK (sold_pcs <= pcs);
 
@@ -692,8 +694,14 @@ CREATE TABLE IF NOT EXISTS material_purchases (
 
 ALTER TABLE material_purchases DROP COLUMN IF EXISTS rate;
 ALTER TABLE material_purchases DROP COLUMN IF EXISTS amount;
+-- Migrate legacy 'silver' rows BEFORE the type CHECK is added, otherwise a
+-- leftover 'silver' row aborts schema.sql and everything after it (RLS fixes)
+-- silently never deploys.
+UPDATE material_purchases SET type = 'silver_925' WHERE type = 'silver';
 ALTER TABLE material_purchases DROP CONSTRAINT IF EXISTS material_purchases_type_check;
 ALTER TABLE material_purchases ADD CONSTRAINT material_purchases_type_check CHECK (type IN ('gold_18k', 'silver_925', 'silver_ornaments'));
+-- Clamp oversold legacy data before the sold_weight CHECK (same abort guard).
+UPDATE material_purchases SET sold_weight = LEAST(sold_weight, weight) WHERE sold_weight > weight;
 ALTER TABLE material_purchases DROP CONSTRAINT IF EXISTS chk_mp_sold_weight;
 ALTER TABLE material_purchases ADD CONSTRAINT chk_mp_sold_weight CHECK (sold_weight >= 0 AND sold_weight <= weight);
 
@@ -713,6 +721,7 @@ CREATE TABLE IF NOT EXISTS material_sales (
   created_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
+UPDATE material_sales SET type = 'silver_925' WHERE type = 'silver';
 ALTER TABLE material_sales DROP CONSTRAINT IF EXISTS material_sales_type_check;
 ALTER TABLE material_sales ADD CONSTRAINT material_sales_type_check CHECK (type IN ('gold_18k', 'silver_925', 'silver_ornaments'));
 
