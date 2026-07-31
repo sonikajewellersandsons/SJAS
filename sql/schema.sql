@@ -1032,9 +1032,9 @@ CREATE POLICY inv_sequences_update ON inv_sequences FOR UPDATE USING (
   has_permission('allow_billing')
 );
 
--- Settings: only owner can read/write
+-- Settings: read for billing/reports (need gold_rate, shop_state for invoices & tax split), write only owner
 CREATE POLICY settings_read ON settings FOR SELECT USING (
-  has_permission('allow_settings')
+  has_permission('allow_settings') OR has_permission('allow_billing') OR has_permission('allow_reports')
 );
 CREATE POLICY settings_write ON settings FOR INSERT WITH CHECK (
   has_permission('allow_settings')

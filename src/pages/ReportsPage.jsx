@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useToast } from '../components/Toast'
-import { BarChart3, TrendingUp, Receipt, Users, FileText, Tag, PieChart } from 'lucide-react'
+import { downloadCsv } from '../lib/csv'
+import { BarChart3, TrendingUp, Receipt, Users, FileText, Tag, PieChart, Download } from 'lucide-react'
 
 function fmt(n) {
   return '₹' + (Number(n) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -170,7 +171,17 @@ function SalesOverview({ year, addToast }) {
 
       {/* Monthly Table */}
       <div className="card">
-        <div className="card-header"><h3 className="card-title">Month-wise Details</h3></div>
+        <div className="card-header">
+          <h3 className="card-title">Month-wise Details</h3>
+          <button className="btn btn-sm btn-outline" onClick={() => downloadCsv(
+            `sales_overview_${year}.csv`,
+            ['Month', 'Taxable Value', 'Tax', 'Sales', 'Count', 'Intra', 'Inter'],
+            months.map(m => [
+              m.month, m.taxable.toFixed(2), m.tax.toFixed(2), m.sales.toFixed(2), m.count,
+              m.intra.toFixed(2), m.inter.toFixed(2),
+            ])
+          )}><Download size={14} /> CSV</button>
+        </div>
         <div className="table-wrapper">
           <table>
             <thead>
@@ -281,7 +292,23 @@ function TaxReport({ year, addToast }) {
 
   return (
     <div className="card">
-      <div className="card-header"><h3 className="card-title">Tax Summary — {year}-{parseInt(year)+1}</h3></div>
+      <div className="card-header">
+        <h3 className="card-title">Tax Summary — {year}-{parseInt(year)+1}</h3>
+        <button className="btn btn-sm btn-outline" onClick={() => downloadCsv(
+          `tax_report_${year}.csv`,
+          ['Month', 'Taxable Value', 'CGST (1.5%)', 'SGST (1.5%)', 'IGST (3%)', 'Intra-state', 'Inter-state', 'Hallmark', 'Total Tax'],
+          months.map(m => {
+            const cgst = m.intra * 0.015
+            const sgst = m.intra * 0.015
+            const igst = m.inter * 0.03
+            const hallmarkTax = Math.max(0, m.tax - (cgst + sgst + igst))
+            return [
+              m.month, m.taxable.toFixed(2), cgst.toFixed(2), sgst.toFixed(2), igst.toFixed(2),
+              m.intra.toFixed(2), m.inter.toFixed(2), hallmarkTax.toFixed(2), m.tax.toFixed(2),
+            ]
+          })
+        )}><Download size={14} /> CSV</button>
+      </div>
       <div style={{ display: 'flex', gap: '1rem', padding: '0.75rem 1rem', borderBottom: '1px solid var(--border)' }}>
         <div><span className="text-xs text-muted">Total Taxable Value</span><div style={{ fontWeight: 700 }}>{fmt(totalTaxable)}</div></div>
         <div><span className="text-xs text-muted">Total Tax</span><div style={{ fontWeight: 700, color: 'var(--red)' }}>{fmt(totalTax)}</div></div>
@@ -382,7 +409,14 @@ function HsnSummary({ year, addToast }) {
 
   return (
     <div className="card">
-      <div className="card-header"><h3 className="card-title">HSN Code Summary — {year}-{parseInt(year)+1}</h3></div>
+      <div className="card-header">
+        <h3 className="card-title">HSN Code Summary — {year}-{parseInt(year)+1}</h3>
+        <button className="btn btn-sm btn-outline" onClick={() => downloadCsv(
+          `hsn_summary_${year}.csv`,
+          ['HSN Code', 'Item', 'Weight (g)', 'Taxable Value', 'Tax'],
+          data.map(r => [r.hsn, r.name, r.weight.toFixed(3), r.value.toFixed(2), r.tax.toFixed(2)])
+        )}><Download size={14} /> CSV</button>
+      </div>
       <div className="table-wrapper">
         <table>
           <thead>
@@ -483,7 +517,14 @@ function CustomerReport({ year, addToast }) {
         </div>
       </div>
       <div className="card">
-        <div className="card-header"><h3 className="card-title">All Customers (Sorted by Sales)</h3></div>
+        <div className="card-header">
+          <h3 className="card-title">All Customers (Sorted by Sales)</h3>
+          <button className="btn btn-sm btn-outline" onClick={() => downloadCsv(
+            `customers_${year}.csv`,
+            ['Customer', 'Phone', 'State', 'GSTIN', 'Total Sales', 'Invoices'],
+            data.map(c => [c.name, c.phone || '', c.state || '', c.gstin || '', c.total.toFixed(2), c.count])
+          )}><Download size={14} /> CSV</button>
+        </div>
         <div className="table-wrapper">
           <table>
             <thead><tr>
@@ -586,7 +627,14 @@ function OthersReport({ year, addToast }) {
       {/* Payment Mode Split */}
       <div className="form-row" style={{ marginBottom: '1rem' }}>
         <div className="card">
-          <div className="card-header"><h3 className="card-title">Payment Mode Split</h3></div>
+          <div className="card-header">
+            <h3 className="card-title">Payment Mode Split</h3>
+            <button className="btn btn-sm btn-outline" onClick={() => downloadCsv(
+              `payments_${year}.csv`,
+              ['Mode', 'Total', '%'],
+              payData.map(p => [p.mode, p.total.toFixed(2), payTotal > 0 ? ((p.total / payTotal) * 100).toFixed(2) : '0'])
+            )}><Download size={14} /> CSV</button>
+          </div>
           <div style={{ padding: '1rem' }}>
             <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '1rem' }}>
               {payData.map(p => (
@@ -605,7 +653,14 @@ function OthersReport({ year, addToast }) {
 
         {/* Category Sales */}
         <div className="card">
-          <div className="card-header"><h3 className="card-title">Category-wise Sales</h3></div>
+          <div className="card-header">
+            <h3 className="card-title">Category-wise Sales</h3>
+            <button className="btn btn-sm btn-outline" onClick={() => downloadCsv(
+              `category_sales_${year}.csv`,
+              ['Category', 'Items', 'Value', 'Tax'],
+              catData.map(c => [c.category, c.count, c.value.toFixed(2), c.tax.toFixed(2)])
+            )}><Download size={14} /> CSV</button>
+          </div>
           <div className="table-wrapper">
             <table>
               <thead><tr>
@@ -632,7 +687,14 @@ function OthersReport({ year, addToast }) {
 
       {/* Monthly Outward Supply Summary */}
       <div className="card">
-        <div className="card-header"><h3 className="card-title">Monthly Outward Supply Summary</h3></div>
+        <div className="card-header">
+          <h3 className="card-title">Monthly Outward Supply Summary</h3>
+          <button className="btn btn-sm btn-outline" onClick={() => downloadCsv(
+            `outward_supply_${year}.csv`,
+            ['Month', 'Invoices', 'Intra-state', 'Inter-state', 'Total Value'],
+            supplyMonths.map(([m, d]) => [m, d.count, d.intra, d.inter, d.total.toFixed(2)])
+          )}><Download size={14} /> CSV</button>
+        </div>
         <div className="table-wrapper">
           <table>
             <thead><tr>

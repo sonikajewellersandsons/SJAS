@@ -499,6 +499,8 @@ function PurchaseTab() {
   const [masterItems, setMasterItems] = useState([])
   const [purchases, setPurchases] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
   const [saving, setSaving] = useState(false)
   const [search, setSearch] = useState('')
   const [expandedDates, setExpandedDates] = useState({})
@@ -553,14 +555,33 @@ function PurchaseTab() {
     try {
       const [itemsRes, purchasesRes] = await Promise.all([
         supabase.from('item_master').select('id, name, purity').eq('active', true).order('name'),
-        supabase.from('purchases').select('*, item_master!left(name)').order('created_at', { ascending: false }).limit(500)
+        supabase.from('purchases').select('*, item_master!left(name)').order('created_at', { ascending: false }).order('id', { ascending: false }).range(0, 500)
       ])
       if (itemsRes.error) addToast('Failed to load items', 'error')
       if (purchasesRes.error) addToast('Failed to load purchases', 'error')
       setMasterItems(itemsRes.data || [])
-      setPurchases(purchasesRes.data || [])
+      setPurchases((purchasesRes.data || []).slice(0, 500))
+      setHasMore((purchasesRes.data || []).length > 500)
     } catch (err) { addToast('Failed to load data', 'error') }
     finally { setLoading(false) }
+  }
+
+  async function loadMore() {
+    if (loadingMore) return
+    setLoadingMore(true)
+    try {
+      const { data, error } = await supabase
+        .from('purchases')
+        .select('*, item_master!left(name)')
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false })
+        .range(purchases.length, purchases.length + 500)
+      if (error) { addToast('Failed to load purchases', 'error') } else if (data) {
+        setPurchases(prev => [...prev, ...data.slice(0, 500)])
+        setHasMore(data.length > 500)
+      }
+    } catch (err) { addToast('Failed to load purchases', 'error') }
+    finally { setLoadingMore(false) }
   }
 
   async function savePurchase(e) {
@@ -805,6 +826,14 @@ function PurchaseTab() {
           </div>
         )
       })()}
+
+      {hasMore && (
+        <div style={{ textAlign: 'center', marginTop: '0.75rem' }}>
+          <button className="btn btn-outline" onClick={loadMore} disabled={loadingMore}>
+            {loadingMore ? 'Loading...' : 'Load more purchases'}
+          </button>
+        </div>
+      )}
     </div>
   )
 }

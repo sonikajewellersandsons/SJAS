@@ -27,6 +27,8 @@ export default function InwardSupplyPage() {
   const [metalItems, setMetalItems] = useState([])
   const [customers, setCustomers] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
 
   // Filters
   const [search, setSearch] = useState('')
@@ -66,18 +68,37 @@ export default function InwardSupplyPage() {
     setLoading(true)
     try {
       const [vouchRes, custRes, metalRes] = await Promise.all([
-        supabase.from('inward_supply_vouchers').select('*').order('created_at', { ascending: false }).limit(500),
+        supabase.from('inward_supply_vouchers').select('*').order('created_at', { ascending: false }).order('id', { ascending: false }).range(0, 500),
         supabase.from('customers').select('id, name, phone, aadhaar').order('name'),
         supabase.from('item_master').select('id, name, purity').eq('active', true).eq('category', 'Metal'),
       ])
       if (vouchRes.error) addToast('Failed to load vouchers', 'error')
       if (custRes.error) addToast('Failed to load customers', 'error')
       if (metalRes.error) addToast('Failed to load metal items', 'error')
-      setVouchers(vouchRes.data || [])
+      setVouchers((vouchRes.data || []).slice(0, 500))
+      setHasMore((vouchRes.data || []).length > 500)
       setCustomers(custRes.data || [])
       setMetalItems(metalRes.data || [])
     } catch (err) { addToast('Failed to load data', 'error') }
     finally { setLoading(false) }
+  }
+
+  async function loadMore() {
+    if (loadingMore) return
+    setLoadingMore(true)
+    try {
+      const { data, error } = await supabase
+        .from('inward_supply_vouchers')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false })
+        .range(vouchers.length, vouchers.length + 500)
+      if (error) { addToast('Failed to load vouchers', 'error') } else if (data) {
+        setVouchers(prev => [...prev, ...data.slice(0, 500)])
+        setHasMore(data.length > 500)
+      }
+    } catch (err) { addToast('Failed to load vouchers', 'error') }
+    finally { setLoadingMore(false) }
   }
 
   // Inv no generation
@@ -403,6 +424,14 @@ export default function InwardSupplyPage() {
           </tbody>
         </table>
       </div>
+      )}
+
+      {hasMore && (
+        <div style={{ textAlign: 'center', marginTop: '0.75rem' }}>
+          <button className="btn btn-outline" onClick={loadMore} disabled={loadingMore}>
+            {loadingMore ? 'Loading...' : 'Load more vouchers'}
+          </button>
+        </div>
       )}
 
       {/* ─── Create/Edit Form Modal ─── */}

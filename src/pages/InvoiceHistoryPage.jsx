@@ -4,9 +4,11 @@ import { supabase } from '../lib/supabase'
 import { useToast } from '../components/Toast'
 import InvoiceModal from '../components/InvoiceModal'
 import { logAction } from '../lib/audit'
-import { Receipt, Search, Eye, Printer, Trash2, Table2, Edit3 } from 'lucide-react'
+import { downloadCsv } from '../lib/csv'
+import { Receipt, Search, Eye, Printer, Trash2, Table2, Edit3, Download, ChevronDown } from 'lucide-react'
 
 const FUNCTIONS_URL = import.meta.env.VITE_SUPABASE_URL + '/functions/v1'
+const PAGE_SIZE = 500
 
 function fmt(n) {
   return '₹' + (Number(n) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -21,6 +23,8 @@ export default function InvoiceHistoryPage() {
 
   const [invoices, setInvoices] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
   const [search, setSearch] = useState('')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
@@ -39,10 +43,53 @@ export default function InvoiceHistoryPage() {
   async function loadInvoices() {
     setLoading(true)
     try {
-      const { data, error } = await supabase.from('invoices').select('*').order('created_at', { ascending: false }).limit(1000)
-      if (error) { addToast('Failed to load invoices', 'error') } else if (data) { setInvoices(data) }
+      const { data, error } = await supabase
+        .from('invoices')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false })
+        .range(0, PAGE_SIZE) // fetch PAGE_SIZE+1 to detect "has more"
+      if (error) { addToast('Failed to load invoices', 'error') } else if (data) {
+        setInvoices(data.slice(0, PAGE_SIZE))
+        setHasMore(data.length > PAGE_SIZE)
+      }
     } catch (err) { addToast('Failed to load invoices', 'error') }
     finally { setLoading(false) }
+  }
+
+  async function loadMore() {
+    if (loadingMore) return
+    setLoadingMore(true)
+    try {
+      const { data, error } = await supabase
+        .from('invoices')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false })
+        .range(invoices.length, invoices.length + PAGE_SIZE)
+      if (error) { addToast('Failed to load invoices', 'error') } else if (data) {
+        setInvoices(prev => [...prev, ...data.slice(0, PAGE_SIZE)])
+        setHasMore(data.length > PAGE_SIZE)
+      }
+    } catch (err) { addToast('Failed to load invoices', 'error') }
+    finally { setLoadingMore(false) }
+  }
+
+  function exportCsv() {
+    if (filtered.length === 0) { addToast('Nothing to export', 'warning'); return }
+    const headers = ['Inv No', 'Date', 'Customer', 'Phone', 'Address', 'State', 'GSTIN', 'Subtotal', 'Discount', 'Tax', 'Hallmark', 'Adj', 'Round Off', 'Grand Total', 'Payment', 'Cash', 'Bank', 'Gold /10g']
+    const rows = filtered.map(inv => [
+      inv.inv_no, inv.date ? inv.date.split('T')[0] : '', inv.customer_name || '', inv.customer_phone || '',
+      inv.customer_address || '', inv.customer_state || '', inv.customer_gstin || '',
+      Number(inv.subtotal || 0).toFixed(2), Number(inv.discount || 0).toFixed(2),
+      Number(inv.tax_total || 0).toFixed(2), Number(inv.hallmark_total || 0).toFixed(2),
+      Number(inv.adj_amount || 0).toFixed(2), Number(inv.round_off || 0).toFixed(2),
+      Number(inv.grand_total || 0).toFixed(2), inv.payment_mode || '',
+      Number(inv.cash_amt || 0).toFixed(2), Number(inv.bank_amt || 0).toFixed(2),
+      Number(inv.gold_rate || 0).toFixed(2),
+    ])
+    downloadCsv(`invoices_${new Date().toISOString().slice(0, 10)}.csv`, headers, rows)
+    addToast(`Exported ${filtered.length} invoice(s)`, 'success')
   }
 
   async function viewDetails(inv) {
@@ -156,6 +203,9 @@ export default function InvoiceHistoryPage() {
           <input className="input" type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} />
         </div>
         <button className="btn btn-outline" onClick={loadInvoices}>Refresh</button>
+        <button className="btn btn-outline" onClick={exportCsv}>
+          <Download size={14} /> CSV
+        </button>
         <button className={`btn btn-sm ${exportView ? 'btn-primary' : 'btn-outline'}`} onClick={() => setExportView(!exportView)} title="Toggle export view">
           <Table2 size={14} /> {exportView ? 'Normal' : 'Export'}
         </button>
@@ -266,6 +316,14 @@ export default function InvoiceHistoryPage() {
           </tbody>
         </table>
       </div>
+      )}
+
+      {hasMore && (
+        <div style={{ textAlign: 'center', marginTop: '0.75rem' }}>
+          <button className="btn btn-outline" onClick={loadMore} disabled={loadingMore}>
+            <ChevronDown size={14} /> {loadingMore ? 'Loading...' : 'Load more invoices'}
+          </button>
+        </div>
       )}
 
       <InvoiceModal

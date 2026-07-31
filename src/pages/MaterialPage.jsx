@@ -48,6 +48,8 @@ function MaterialDashboard({ type }) {
   const [purchases, setPurchases] = useState([])
   const [sales, setSales] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(null)
@@ -61,16 +63,36 @@ function MaterialDashboard({ type }) {
     try {
       const [pRes, sRes] = await Promise.all([
         supabase.from('material_purchases').select('*').eq('type', type).order('date', { ascending: false }),
-        supabase.from('material_sales').select('*').eq('type', type).order('created_at', { ascending: false }).limit(200),
+        supabase.from('material_sales').select('*').eq('type', type).order('created_at', { ascending: false }).order('id', { ascending: false }).range(0, 200),
       ])
       if (pRes.error) addToast('Failed to load purchases', 'error')
       if (sRes.error) addToast('Failed to load sales', 'error')
       if (pRes.data) setPurchases(pRes.data)
-      if (sRes.data) setSales(sRes.data)
+      if (sRes.data) setSales(sRes.data.slice(0, 200))
+      setHasMore((sRes.data || []).length > 200)
     } catch (err) {
       addToast('Failed to load data', 'error')
     }
     setLoading(false)
+  }
+
+  async function loadMoreSales() {
+    if (loadingMore) return
+    setLoadingMore(true)
+    try {
+      const { data, error } = await supabase
+        .from('material_sales')
+        .select('*')
+        .eq('type', type)
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false })
+        .range(sales.length, sales.length + 200)
+      if (error) { addToast('Failed to load sales', 'error') } else if (data) {
+        setSales(prev => [...prev, ...data.slice(0, 200)])
+        setHasMore(data.length > 200)
+      }
+    } catch (err) { addToast('Failed to load sales', 'error') }
+    finally { setLoadingMore(false) }
   }
 
   const totalWeight = purchases.reduce((s, p) => s + parseFloat(p.weight), 0)
@@ -289,6 +311,14 @@ function MaterialDashboard({ type }) {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {hasMore && (
+          <div style={{ textAlign: 'center', padding: '0.75rem' }}>
+            <button className="btn btn-sm btn-outline" onClick={loadMoreSales} disabled={loadingMore}>
+              {loadingMore ? 'Loading...' : 'Load more sales'}
+            </button>
           </div>
         )}
       </div>

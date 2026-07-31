@@ -353,3 +353,25 @@ Fix BillingPage performance (slow load/re-render), edit-mode stock validation fo
 **Inward supply voucher fix (critical):**
 - `inward_supply_vouchers.inv_no` had a `UNIQUE` constraint that contradicted the multi-row design (one voucher = one row per line item). Dropped it (idempotent `DROP CONSTRAINT IF EXISTS` + regular index).
 - Edit flow reordered to **delete old rows first, then insert new** — the previous insert-then-delete either failed on the unique key or deleted the just-inserted rows (same `inv_no`).
+
+## Added (August 2026 — CSV Export, Pagination & Backup)
+
+**CSV export (`src/lib/csv.js`):**
+- `toCsv(rows, columns)` + `downloadCsv(filename, rows, columns)` — UTF-8 BOM so Excel opens ₹/Indian text correctly; quotes fields containing commas/quotes/newlines.
+- Wired into: InvoiceHistoryPage (CSV button), SalesPage (CSV buttons in both jewellery + materials filter bars), ReportsPage (SalesOverview, TaxReport, HsnSummary, CustomerReport, payments/category/outward).
+- Export always uses the **currently filtered** rows (matches what's on screen).
+
+**Pagination (silently-capped queries — Supabase default limit is 1000):**
+- InvoiceHistoryPage — `PAGE_SIZE = 500`, `loadInvoices` uses `.range()`, "Load more" button.
+- SalesPage — jewellery items + material sales each paginated (500), separate `hasMore` flags.
+- StockPage PurchaseTab — `.range(0, 500)`, Load more button.
+- InwardSupplyPage — vouchers paginated, Load more button.
+- MaterialPage — `material_sales` paginated `.range(0, 200)`, Load more button.
+- ReportsPage queries are already date-bounded (no pagination needed).
+
+**Backup script (`scripts/backup.sh`):**
+- `npm run backup` → `supabase db dump` schema + data into `backups/` with `YYYY-MM-DD_HHMMSS` timestamps. Flags: `--schema`, `--data`. Requires `supabase link` done once.
+- Restore: schema via SQL Editor (`sql/schema.sql` is canonical), data via `psql < backups/data-*.sql`.
+
+**RLS fix:**
+- `settings_read` policy was owner-only, blocking accountants (reports) and salespeople (billing) from reading `shop_state`/`gold_rate`. Now `allow_settings OR allow_billing OR allow_reports`. Write stays owner-only. Deploy by re-running `sql/schema.sql` (idempotent).

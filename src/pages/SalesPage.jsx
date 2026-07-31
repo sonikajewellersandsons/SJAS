@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useToast } from '../components/Toast'
 import InvoiceModal from '../components/InvoiceModal'
-import { Search, X } from 'lucide-react'
+import { downloadCsv } from '../lib/csv'
+import { Search, X, Download, ChevronDown } from 'lucide-react'
 
 function fmt(n) {
   return '₹' + (Number(n) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -12,11 +13,16 @@ function num(n) {
   return (Number(n) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
+const PAGE_SIZE = 500
+
 export default function SalesPage() {
   const { addToast } = useToast()
   const [items, setItems] = useState([])
   const [matSales, setMatSales] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMoreItems, setHasMoreItems] = useState(false)
+  const [hasMoreMat, setHasMoreMat] = useState(false)
   const [search, setSearch] = useState('')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
@@ -33,15 +39,70 @@ export default function SalesPage() {
     const [itemsRes, matRes] = await Promise.all([
       supabase.from('invoice_items')
         .select('*, invoices!inner(inv_no, date, customer_name, customer_phone, gold_rate, grand_total), item_master!left(name, hsn_code, purity)')
-        .order('id', { ascending: false }).limit(2000),
-      // TODO: Also fetch invoice_items with material_type IS NOT NULL that lack material_sales entries (orphan items)
-      supabase.from('material_sales').select('*').order('created_at', { ascending: false }).limit(200),
+        .order('id', { ascending: false }).range(0, PAGE_SIZE),
+      supabase.from('material_sales').select('*').order('created_at', { ascending: false }).order('id', { ascending: false }).range(0, PAGE_SIZE),
     ])
     if (itemsRes.error) addToast('Failed to load sales', 'error')
     if (matRes.error) addToast('Failed to load material sales', 'error')
-    setItems(itemsRes.data || [])
-    setMatSales(matRes.data || [])
+    setItems((itemsRes.data || []).slice(0, PAGE_SIZE))
+    setMatSales((matRes.data || []).slice(0, PAGE_SIZE))
+    setHasMoreItems((itemsRes.data || []).length > PAGE_SIZE)
+    setHasMoreMat((matRes.data || []).length > PAGE_SIZE)
     setLoading(false)
+  }
+
+  async function loadMore() {
+    if (loadingMore) return
+    setLoadingMore(true)
+    const [itemsRes, matRes] = await Promise.all([
+      hasMoreItems
+        ? supabase.from('invoice_items')
+            .select('*, invoices!inner(inv_no, date, customer_name, customer_phone, gold_rate, grand_total), item_master!left(name, hsn_code, purity)')
+            .order('id', { ascending: false }).range(items.length, items.length + PAGE_SIZE)
+        : Promise.resolve({ data: [] }),
+      hasMoreMat
+        ? supabase.from('material_sales').select('*').order('created_at', { ascending: false }).order('id', { ascending: false }).range(matSales.length, matSales.length + PAGE_SIZE)
+        : Promise.resolve({ data: [] }),
+    ])
+    if (itemsRes.data) {
+      setItems(prev => [...prev, ...itemsRes.data.slice(0, PAGE_SIZE)])
+      setHasMoreItems(itemsRes.data.length > PAGE_SIZE)
+    }
+    if (matRes.data) {
+      setMatSales(prev => [...prev, ...matRes.data.slice(0, PAGE_SIZE)])
+      setHasMoreMat(matRes.data.length > PAGE_SIZE)
+    }
+    setLoadingMore(false)
+  }
+
+  function exportCsv() {
+    if (tab === 'materials') {
+      if (matFiltered.length === 0) { addToast('Nothing to export', 'warning'); return }
+      downloadCsv(`material_sales_${new Date().toISOString().slice(0, 10)}.csv`,
+        ['Date', 'Type', 'Description', 'Weight (g)', 'Rate', 'Amount', 'Invoice'],
+        matFiltered.map(s => [
+          s.created_at ? s.created_at.slice(0, 10) : '', s.type || '',
+          s.description || '', Number(s.weight || 0).toFixed(3),
+          s.rate != null ? Number(s.rate).toFixed(2) : '', Number(s.amount || 0).toFixed(2),
+          s.invoice_no || '',
+        ]))
+      addToast(`Exported ${matFiltered.length} material sale(s)`, 'success')
+      return
+    }
+    if (filtered.length === 0) { addToast('Nothing to export', 'warning'); return }
+    downloadCsv(`sales_${new Date().toISOString().slice(0, 10)}.csv`,
+      ['Date', 'Invoice', 'Customer', 'Item', 'Purity', 'Weight (g)', 'HUID', 'Amount'],
+      filtered.map(it => {
+        const inv = it.invoices || {}
+        const item = it.item_master || {}
+        return [
+          inv.date || '', inv.inv_no || '', inv.customer_name || '',
+          item.name || it.description_extra || 'Quick Silver', item.purity || '',
+          Number(it.weight || 0).toFixed(3), it.huid_code || '',
+          Number(it.price || 0).toFixed(2),
+        ]
+      }))
+    addToast(`Exported ${filtered.length} item(s)`, 'success')
   }
 
   async function viewInvoice(invNo) {
@@ -98,6 +159,7 @@ export default function SalesPage() {
         </div>
         <input className="input" type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} style={{ width: '150px' }} />
         <input className="input" type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} style={{ width: '150px' }} />
+        <button className="btn btn-outline" onClick={exportCsv}><Download size={14} /> CSV</button>
       </div>
 
       <div style={{ display: 'flex', gap: '1rem', marginBottom: '0.75rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
@@ -161,6 +223,7 @@ export default function SalesPage() {
             </div>
             <input className="input" type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} style={{ width: '150px' }} />
             <input className="input" type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} style={{ width: '150px' }} />
+            <button className="btn btn-outline" onClick={exportCsv}><Download size={14} /> CSV</button>
           </div>
 
           <div style={{ display: 'flex', gap: '1rem', marginBottom: '0.75rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
@@ -210,6 +273,14 @@ export default function SalesPage() {
             </div>
           )}
         </>
+      )}
+
+      {(tab === 'jewellery' ? hasMoreItems : hasMoreMat) && (
+        <div style={{ textAlign: 'center', marginTop: '0.75rem' }}>
+          <button className="btn btn-outline" onClick={loadMore} disabled={loadingMore}>
+            <ChevronDown size={14} /> {loadingMore ? 'Loading...' : 'Load more'}
+          </button>
+        </div>
       )}
 
       <InvoiceModal
