@@ -465,6 +465,23 @@ serve(async (req) => {
 
   try {
     const body = await req.json()
+
+    // ── PREVIEW mode (BillingPage "Preview Bill" button) ──
+    // Renders the bill from the client-supplied in-memory data. Read-only:
+    // no invoice is saved, no stock is processed, no DB records are written.
+    if (body.preview === true) {
+      const settingsArr = await fetchFrom<any[]>('/rest/v1/settings?select=key,value')
+      const settings: Settings = {}
+      for (const s of settingsArr) {
+        try { settings[s.key] = typeof s.value === 'string' ? JSON.parse(s.value) : s.value }
+        catch { settings[s.key] = s.value }
+      }
+      const html = buildHtml(body.invoice, body.items || [], [], body.customer || null, settings, body.adjInvNo)
+      return new Response(html, {
+        headers: { 'Content-Type': 'text/html; charset=utf-8', ...CORS_HEADERS },
+      })
+    }
+
     const invoiceId = Number(body.invoiceId)
     if (!invoiceId) return new Response('Missing invoiceId', { status: 400, headers: CORS_HEADERS })
 

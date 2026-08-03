@@ -5,7 +5,9 @@ import { useToast } from '../components/Toast'
 import ComboBox from '../components/ComboBox'
 import { logAction } from '../lib/audit'
 import { cleanPhone, financialYear, fyFromInvNo, invNoSeq } from '../lib/format'
-import { Search, Plus, X, FileText } from 'lucide-react'
+import { Search, Plus, X, FileText, Eye } from 'lucide-react'
+
+const FUNCTIONS_URL = import.meta.env.VITE_SUPABASE_URL + '/functions/v1'
 
 const DEFAULT_TAX_PCT = 3
 const DEFAULT_LABOUR_PCT = 10
@@ -34,6 +36,7 @@ export default function BillingPage() {
   const [stockLots, setStockLots] = useState([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [previewLoading, setPreviewLoading] = useState(false)
 
   // Header
   const [date, setDate] = useState(new Date().toISOString().split('T')[0])
@@ -97,7 +100,7 @@ export default function BillingPage() {
     try {
       const results = await Promise.allSettled([
         supabase.from('customers').select('id, name, phone, address, state, aadhaar, pan, pincode, gstin').order('name').limit(1000),
-        supabase.from('item_master').select('id, name, hallmark_charge, purity, material_type').eq('active', true).order('name'),
+        supabase.from('item_master').select('id, name, hallmark_charge, purity, material_type, hsn_code').eq('active', true).order('name'),
         supabase.from('settings').select('key, value'),
         supabase.rpc('get_stock_lots'),
         supabase.from('inward_supply_vouchers').select('id, inv_no, customer_id, customer_name, grand_total, date')
@@ -525,35 +528,44 @@ export default function BillingPage() {
 
   const savingRef = useRef(false)
 
+  // Shared field validation for BOTH save and preview. Returns an error message
+  // or null. Deliberately does NOT check stock — preview must not block on it.
+  function validateBillingFields() {
+    if (!selectedCustomer && !isNewCustomer) return 'Select or add a customer'
+    if (!goldRate || goldRate <= 0) return 'Enter gold rate'
+    if (isNewCustomer && !newCust.name.trim()) return 'Customer name is required'
+    const validLines = lineItems.filter(l => l.item_id)
+    if (validLines.length === 0) return 'Add at least one item'
+    for (const l of validLines) {
+      const origIdx = lineItems.indexOf(l)
+      const w = parseFloat(l.weight)
+      if (!w || w <= 0) return `Item #${origIdx+1}: enter a valid weight`
+      if (l.is_silver) {
+        if (l.silver_rate === '' || isNaN(parseFloat(l.silver_rate)) || parseFloat(l.silver_rate) <= 0) return `Item #${origIdx+1}: enter a valid silver rate`
+      } else if (l.is_gold_18k) {
+        if (l.labour_pct === '' || isNaN(parseFloat(l.labour_pct)) || parseFloat(l.labour_pct) < 0) return `Item #${origIdx+1}: enter a valid labour %`
+      } else {
+        if (l.labour_pct === '' || isNaN(parseFloat(l.labour_pct)) || parseFloat(l.labour_pct) < 0) return `Item #${origIdx+1}: enter a valid labour %`
+        if (!l.item_id || isNaN(parseInt(l.item_id))) return `Item #${origIdx+1}: select an item`
+      }
+    }
+    if (paymentMode === 'BOTH' && Math.abs(parseFloat(cashAmt || 0) + parseFloat(bankAmt || 0) - grandTotal) > 0.01) {
+      return 'Cash + Bank amount must equal Grand Total'
+    }
+    if (discount > totalPrice + totalTax + totalHcTax + totalHc) {
+      return 'Discount cannot exceed total amount'
+    }
+    return null
+  }
+
   async function saveInvoice(e) {
     e.preventDefault()
     if (savingRef.current) return
     savingRef.current = true
 
-    if (!selectedCustomer && !isNewCustomer) { addToast('Select or add a customer', 'error'); savingRef.current = false; return }
-    if (!goldRate || goldRate <= 0) { addToast('Enter gold rate', 'error'); savingRef.current = false; return }
-    if (isNewCustomer && !newCust.name.trim()) { addToast('Customer name is required', 'error'); savingRef.current = false; return }
+    const vErr = validateBillingFields()
+    if (vErr) { addToast(vErr, 'error'); savingRef.current = false; return }
     const validLines = lineItems.filter(l => l.item_id)
-    if (validLines.length === 0) { addToast('Add at least one item', 'error'); savingRef.current = false; return }
-    for (const l of validLines) {
-      const origIdx = lineItems.indexOf(l)
-      const w = parseFloat(l.weight)
-      if (!w || w <= 0) { addToast(`Item #${origIdx+1}: enter a valid weight`, 'error'); savingRef.current = false; return }
-      if (l.is_silver) {
-        if (l.silver_rate === '' || isNaN(parseFloat(l.silver_rate)) || parseFloat(l.silver_rate) <= 0) { addToast(`Item #${origIdx+1}: enter a valid silver rate`, 'error'); savingRef.current = false; return }
-      } else if (l.is_gold_18k) {
-        if (l.labour_pct === '' || isNaN(parseFloat(l.labour_pct)) || parseFloat(l.labour_pct) < 0) { addToast(`Item #${origIdx+1}: enter a valid labour %`, 'error'); savingRef.current = false; return }
-      } else {
-        if (l.labour_pct === '' || isNaN(parseFloat(l.labour_pct)) || parseFloat(l.labour_pct) < 0) { addToast(`Item #${origIdx+1}: enter a valid labour %`, 'error'); savingRef.current = false; return }
-        if (!l.item_id || isNaN(parseInt(l.item_id))) { addToast(`Item #${origIdx+1}: select an item`, 'error'); savingRef.current = false; return }
-      }
-    }
-    if (paymentMode === 'BOTH' && Math.abs(parseFloat(cashAmt || 0) + parseFloat(bankAmt || 0) - grandTotal) > 0.01) {
-      addToast('Cash + Bank amount must equal Grand Total', 'error'); savingRef.current = false; return
-    }
-    if (discount > totalPrice + totalTax + totalHcTax + totalHc) {
-      addToast('Discount cannot exceed total amount', 'error'); savingRef.current = false; return
-    }
 
     // Invoice number collision guard (second browser tab / manual override).
     // Runs before any stock reversal so a conflict never corrupts state.
@@ -813,6 +825,121 @@ export default function BillingPage() {
     } finally {
       setSaving(false)
       savingRef.current = false
+    }
+  }
+
+  // Preview Bill — renders the bill via the print edge function WITHOUT saving
+  // the invoice, deducting stock, or writing anything to the database.
+  async function previewInvoice() {
+    const vErr = validateBillingFields()
+    if (vErr) { addToast(vErr, 'error'); return }
+    const validLines = lineItems.filter(l => l.item_id)
+
+    setPreviewLoading(true)
+    try {
+      const customerName = selectedCustomer ? selectedCustomer.name : newCust.name.trim()
+      const customerAddress = selectedCustomer ? (selectedCustomer.address || '') : newCust.address.trim()
+      const customerPhone = selectedCustomer ? (selectedCustomer.phone || '') : newCust.phone.trim()
+      const customerState = selectedCustomer ? (selectedCustomer.state || 'Haryana') : newCust.state
+      const customerGstin = selectedCustomer ? (selectedCustomer.gstin || '') : newCust.gstin.trim().toUpperCase()
+
+      const previewId = (editMode || editModeRef.current) && editInvoiceId ? editInvoiceId : 'Invid'
+      const inv = {
+        inv_no: `${invNo}/${previewId}`,
+        date,
+        customer_name: customerName,
+        customer_address: customerAddress,
+        customer_phone: customerPhone,
+        customer_state: customerState,
+        customer_gstin: customerGstin,
+        gold_rate: Math.round(goldRate * 100) / 100,
+        subtotal: Math.round(totalPrice * 100) / 100,
+        hallmark_total: Math.round(totalHc * 100) / 100,
+        tax_total: Math.round((totalTax + totalHcTax) * 100) / 100,
+        discount: Math.round(parseFloat(discount || 0) * 100) / 100,
+        adj_bill_id: adjBillNo ? parseInt(adjBillNo) : null,
+        adj_amount: Math.round(parseFloat(adjAmt || 0) * 100) / 100,
+        round_off: Math.round(roundOff * 100) / 100,
+        grand_total: Math.round(grandTotal * 100) / 100,
+        payment_mode: paymentMode,
+        cash_amt: paymentMode === 'BOTH' ? (parseFloat(cashAmt || 0)) : (paymentMode === 'CASH' ? grandTotal : 0),
+        bank_amt: paymentMode === 'BOTH' ? (parseFloat(bankAmt || 0)) : (paymentMode === 'E-BANKING' ? grandTotal : 0),
+      }
+
+      const items = validLines.map((line, idx) => {
+        const origIdx = lineItems.indexOf(line)
+        const c = lineTotals[origIdx >= 0 ? origIdx : idx]
+        if (line.is_silver) {
+          return {
+            item_id: null,
+            description_extra: line.description || 'Quick Silver',
+            material_type: line.silver_type,
+            weight: parseFloat(line.weight) || 0,
+            rate_per_gram: Math.round((parseFloat(line.silver_rate) || 0) * 100) / 100,
+            price: Math.round(c.price * 100) / 100,
+            tax_amount: Math.round(c.tax * 100) / 100,
+            hallmark_charge: 0,
+            sno: idx + 1,
+            huid: false,
+            huid_code: '',
+          }
+        }
+        if (line.is_gold_18k) {
+          return {
+            item_id: null,
+            description_extra: line.description || 'Gold Jewellery (18K)',
+            material_type: 'gold_18k',
+            weight: parseFloat(line.weight) || 0,
+            rate_per_gram: Math.round(c.ratePerGram * 100) / 100,
+            price: Math.round(c.price * 100) / 100,
+            tax_amount: Math.round(c.tax * 100) / 100,
+            hallmark_charge: 0,
+            sno: idx + 1,
+            huid: false,
+            huid_code: '',
+          }
+        }
+        const mi = masterItems.find(m => m.id === parseInt(line.item_id))
+        return {
+          item_id: parseInt(line.item_id),
+          item_master: { name: mi?.name || 'Item', hsn_code: mi?.hsn_code || '71131913', purity: mi?.purity || '' },
+          weight: parseFloat(line.weight) || 0,
+          rate_per_gram: Math.round(c.ratePerGram * 100) / 100,
+          price: Math.round(c.price * 100) / 100,
+          tax_amount: Math.round(c.tax * 100) / 100,
+          hallmark_charge: c.hc,
+          sno: idx + 1,
+          huid: line.huid_enabled,
+          huid_code: line.huid_code || '',
+        }
+      })
+
+      const adjInvNo = adjVoucherId ? (inwardVouchers.find(v => v.id === adjVoucherId)?.inv_no) : undefined
+
+      const sess = await supabase.auth.getSession()
+      const token = sess?.data?.session?.access_token
+      if (!token) { addToast('Not authenticated', 'error'); return }
+
+      const res = await fetch(FUNCTIONS_URL + '/generate-invoice-pdf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        body: JSON.stringify({ preview: true, invoice: inv, items, customer: selectedCustomer || null, adjInvNo }),
+      })
+      if (!res.ok) {
+        const t = await res.text()
+        addToast('Preview error (' + res.status + '): ' + t, 'error')
+        return
+      }
+      const html = await res.text()
+      const blob = new Blob([html], { type: 'text/html' })
+      const url = URL.createObjectURL(blob)
+      const w = window.open(url, '_blank')
+      if (!w) addToast('Please allow popups to preview', 'warning')
+    } catch (err) {
+      console.error('Preview error:', err)
+      addToast('Failed to generate preview', 'error')
+    } finally {
+      setPreviewLoading(false)
     }
   }
 
@@ -1484,6 +1611,15 @@ export default function BillingPage() {
             Exact stock match not found for one or more items. Check weight &amp; HUID.
           </div>
         )}
+        <button
+          type="button"
+          className="btn btn-outline btn-full"
+          onClick={previewInvoice}
+          disabled={previewLoading}
+          style={{ marginBottom: '8px' }}
+        >
+          <Eye size={16} /> {previewLoading ? 'Generating preview…' : 'Preview Bill'}
+        </button>
         <button type="submit" className="btn btn-primary btn-full" disabled={saving || !allStockAvailable}>
           {saving ? 'Saving...' : <><FileText size={16} /> {editMode ? 'Update Invoice' : 'Create Invoice'}</>}
         </button>
