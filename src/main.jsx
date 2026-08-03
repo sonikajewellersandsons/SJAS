@@ -43,3 +43,15 @@ ReactDOM.createRoot(document.getElementById('root')).render(
     </ErrorBoundary>
   </React.StrictMode>
 )
+
+// UX: select the whole value of a number input on focus, so typing replaces
+// any default ("0", tax %, labour %) instead of appending to it or requiring
+// the user to clear it manually first.
+document.addEventListener('focusin', (e) => {
+  const el = e.target
+  if (el && el.tagName === 'INPUT' && el.type === 'number') {
+    requestAnimationFrame(() => {
+      try { el.select() } catch { /* input may have been replaced */ }
+    })
+  }
+})

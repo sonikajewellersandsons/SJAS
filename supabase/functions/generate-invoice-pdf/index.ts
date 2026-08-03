@@ -333,6 +333,7 @@ th { background: #ddd; font-weight: 700; text-align: center; white-space: nowrap
     <div class="bl b">Buyer (Bill to)</div>
     <div class="b" style="font-size: 12px; margin-top: 2px;">${esc(inv.customer_name || customer?.name || '')}</div>
     <div class="sm">${esc(inv.customer_address || customer?.address || '')}</div>
+    ${(inv.customer_phone || customer?.phone) ? `<div class="sm">Phone: ${esc(inv.customer_phone || customer?.phone)}</div>` : ''}
     ${(inv.customer_gstin || customer?.gstin) ? `<div class="sm">GSTIN/UIN: ${esc(inv.customer_gstin || customer?.gstin)}</div>` : ''}
     ${customer?.pan ? `<div class="sm">PAN/IT No: ${esc(customer.pan)}</div>` : ''}
     <div class="sm">State: ${esc(inv.customer_state || customer?.state)} (Code: ${buyerStateCode})</div>

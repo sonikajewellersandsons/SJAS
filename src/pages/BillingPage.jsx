@@ -496,16 +496,17 @@ export default function BillingPage() {
     const tp = lp.reduce((s, l) => s + l.price, 0)
     const thc = lp.reduce((s, l) => s + l.hc, 0)
     const da = parseFloat(discount || 0)
-    const dp = tp > 0 ? da / tp : 0
+    // Tax is computed on the FULL price; the discount is a flat deduction from
+    // the final total (after tax), so a ₹669 discount takes exactly ₹669 off
+    // the grand total (previously it also shrank the taxable base → tax).
     const lt = lineItems.map((l, i) => {
-      const discountedPrice = lp[i].price * (1 - dp)
-      const tax = discountedPrice * (parseFloat(l.tax_pct) || 0) / 100
+      const tax = lp[i].price * (parseFloat(l.tax_pct) || 0) / 100
       const hcTax = lp[i].hc * HALLMARK_TAX_PCT / 100
-      return { ...lp[i], discountedPrice, tax, hcTax, total: discountedPrice + tax + lp[i].hc + hcTax }
+      return { ...lp[i], tax, hcTax, total: lp[i].price + tax + lp[i].hc + hcTax }
     })
     const tt = lt.reduce((s, l) => s + l.tax, 0)
     const thct = lt.reduce((s, l) => s + l.hcTax, 0)
-    const ba = tp - da + tt + thc + thct
+    const ba = tp + tt + thc + thct - da
     const aa = ba - parseFloat(adjAmt || 0)
     const ro = Math.round(aa) - aa
     const sr = lineItems.map((l, i) => checkStock(l.item_id, l.weight, l.huid_enabled, i, { silverDemand, origSilverDemand, goldDemand, origGoldDemand }))
@@ -550,8 +551,8 @@ export default function BillingPage() {
     if (paymentMode === 'BOTH' && Math.abs(parseFloat(cashAmt || 0) + parseFloat(bankAmt || 0) - grandTotal) > 0.01) {
       addToast('Cash + Bank amount must equal Grand Total', 'error'); savingRef.current = false; return
     }
-    if (discount > totalPrice) {
-      addToast('Discount cannot exceed total price', 'error'); savingRef.current = false; return
+    if (discount > totalPrice + totalTax + totalHcTax + totalHc) {
+      addToast('Discount cannot exceed total amount', 'error'); savingRef.current = false; return
     }
 
     // Invoice number collision guard (second browser tab / manual override).
@@ -1107,7 +1108,7 @@ export default function BillingPage() {
                                 <tbody>
                                   <tr>
                                     <td style={{ border: '1px solid #d0d0d0', padding: '3px 8px', textAlign: 'center', fontWeight: 700, color: '#888', fontSize: '0.7rem' }}>Silver</td>
-                                    <td style={{ border: '1px solid #d0d0d0', padding: '3px 8px', textAlign: 'center', fontWeight: 700 }}>{fmt(c.price)}{discAmt > 0 ? <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '2px' }}>({fmt(c.discountedPrice)})</span> : ''}</td>
+                                    <td style={{ border: '1px solid #d0d0d0', padding: '3px 8px', textAlign: 'center', fontWeight: 700 }}>{fmt(c.price)}</td>
                                     <td style={{ border: '1px solid #d0d0d0', padding: '3px 8px', textAlign: 'center' }}>{fmt(c.tax)}</td>
                                   </tr>
                                 </tbody>
@@ -1193,7 +1194,7 @@ export default function BillingPage() {
                                 <tbody>
                                   <tr>
                                     <td style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center', fontWeight: 700, color: 'var(--text-secondary)', fontSize: '0.7rem' }}>Gold 18K</td>
-                                    <td style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center', fontWeight: 700 }}>{fmt(c.price)}{discAmt > 0 ? <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '2px' }}>({fmt(c.discountedPrice)})</span> : ''}</td>
+                                    <td style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center', fontWeight: 700 }}>{fmt(c.price)}</td>
                                     <td style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center' }}>{fmt(c.tax)}</td>
                                   </tr>
                                 </tbody>
@@ -1344,7 +1345,7 @@ export default function BillingPage() {
                               <tbody>
                                 <tr>
                                   <td style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center', fontWeight: 700, color: 'var(--text-secondary)', fontSize: '0.7rem' }}>Gold</td>
-                                  <td style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center', fontWeight: 700 }}>{fmt(c.price)}{discAmt > 0 ? <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '2px' }}>({fmt(c.discountedPrice)})</span> : ''}</td>
+                                  <td style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center', fontWeight: 700 }}>{fmt(c.price)}</td>
                                   <td style={{ border: '1px solid var(--border)', padding: '3px 8px', textAlign: 'center' }}>{fmt(c.tax)}</td>
                                 </tr>
                                 <tr>

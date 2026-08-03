@@ -182,6 +182,12 @@ export default function InvoiceModal({ show, invoice, lineItems: rawItems, loadi
             <span className="font-bold">Sub Total</span>
             <span className="font-mono">{fmt(invoice.subtotal)}</span>
           </div>
+          {totalHc > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0' }}>
+              <span className="font-bold">Hallmark Charges</span>
+              <span className="font-mono">{fmt(totalHc)}</span>
+            </div>
+          )}
           {parseFloat(invoice.adj_amount) > 0 && (
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0' }}>
               <span className="font-bold">Adjusted Amount</span>
