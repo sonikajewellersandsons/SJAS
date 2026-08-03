@@ -239,9 +239,9 @@ ${Number(inv.round_off) !== 0 ? `<tr class="subrow"><td></td><td class="r i">Rou
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>SJS_${esc(inv.inv_no)}</title>
 <style>
-@page { margin: 7mm; }
+@page { margin: 8mm; }
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: Arial, Helvetica, sans-serif; font-size: 13px; color: #222; background: #e5e5e5; padding: 5px 0; }
+body { font-family: Arial, Helvetica, sans-serif; font-size: 13px; color: #222; background: #fff; padding: 0; }
 .invoice { width: 100%; max-width: 210mm; margin: 0 auto; border: 1px solid #bbb; page-break-after: always; position: relative; }
 table { width: 100%; border-collapse: collapse; }
 td, th { border: 0.5px solid #bbb; padding: 4px 5px; vertical-align: top; }

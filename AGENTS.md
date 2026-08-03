@@ -442,3 +442,11 @@ Fix BillingPage performance (slow load/re-render), edit-mode stock validation fo
 - **Delete stays disabled on sold lots** (deleting a consumed lot corrupts the material ledger) — the button now has a tooltip explaining to delete the linked invoices first.
 - **Tab-switch guard**: switching material tabs mid-edit now closes the form/confirm so an edit can never apply a row from another type.
 - Permission model for materials (route = `allow_stock_view`, CRUD = `allow_stock_edit`): owner & stock_manager full CRUD, accountant read-only, salesperson no access.
+
+## Added (August 2026 — Billing/Stock/PDF UX fixes)
+
+- **Silver tax default 3%**: `addSilverLine()` now creates silver lines with `tax_pct = 3` (was 0). Existing lines keep their stored tax on edit reload.
+- **Discount reduces grand total**: already applied pre-tax (GST-correct: `beforeAdj = totalPrice - discAmt + tax + hallmark`). Now the Discount row also shows the deducted amount (`-₹X`) next to the input so the reduction is explicit.
+- **Purchase total weight includes qty**: StockPage `totalWeight` now sums `weight × qty` (was just weight), so 2–3 pieces are counted.
+- **Edit purchase (StockPage)**: each purchase entry (grouped by its shared `created_at`) now has an **Edit** button. Editing loads supplier/date/notes + item lines into the form; saving calls the new atomic RPC **`replace_purchase(p_created_at, p_rows)`** (SECURITY DEFINER) which deletes the old rows + their stock-ledger IN entries and re-inserts the updated ones. Edit is disabled for any lot with `sold_pcs > 0` (must delete the linked invoices first).
+- **PDF centered**: `@page { margin: 8mm }` (equal margins), `.invoice { margin: 0 auto }`, white body background — the invoice is centered with equal margins on both sides when printed.

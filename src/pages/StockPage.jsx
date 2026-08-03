@@ -509,6 +509,7 @@ function PurchaseTab() {
   const [supplier, setSupplier] = useState({ name: '', phone: '' })
   const [date, setDate] = useState(new Date().toISOString().split('T')[0])
   const [notes, setNotes] = useState('')
+  const [editingGroup, setEditingGroup] = useState(null)
 
   // Item bucket
   const [lineItems, setLineItems] = useState([
@@ -548,6 +549,31 @@ function PurchaseTab() {
     setDate(new Date().toISOString().split('T')[0])
     setNotes('')
     setLineItems([{ item_id: '', purity: '22K', weight: '', qty: '1', huid: true }])
+    setEditingGroup(null)
+  }
+
+  async function startEdit(createdAt) {
+    try {
+      const { data, error } = await supabase
+        .from('purchases')
+        .select('*')
+        .eq('created_at', createdAt)
+        .order('id')
+      if (error || !data || data.length === 0) { addToast('Purchase not found', 'error'); return }
+      const first = data[0]
+      setSupplier({ name: first.supplier_name || '', phone: first.supplier_phone || '' })
+      setDate((first.date || '').slice(0, 10))
+      setNotes(first.notes || '')
+      setLineItems(data.map(r => ({
+        item_id: r.item_id.toString(),
+        purity: r.purity || '22K',
+        weight: r.weight.toString(),
+        qty: r.pcs.toString(),
+        huid: r.huid ?? true,
+      })))
+      setEditingGroup(createdAt)
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+    } catch (err) { addToast('Failed to load purchase', 'error') }
   }
 
   async function loadData() {
@@ -616,11 +642,21 @@ function PurchaseTab() {
         huid: line.huid ?? true,
       }))
 
-      const { error } = await supabase.from('purchases').insert(rows)
+      let error
+      if (editingGroup) {
+        // Atomic replace: deletes the old rows (and their stock-ledger IN
+        // entries) then inserts the updated ones — refuses if any lot is sold.
+        ;({ error } = await supabase.rpc('replace_purchase', {
+          p_created_at: editingGroup,
+          p_rows: rows,
+        }))
+      } else {
+        ;({ error } = await supabase.from('purchases').insert(rows))
+      }
       if (error) throw error
 
-      addToast(`${rows.length} item(s) purchased successfully`, 'success')
-      logAction('purchase_created', 'purchases', null, { items: rows.length, supplier: supplier.name.trim(), date, total_weight: totalWeight })
+      addToast(editingGroup ? 'Purchase updated' : `${rows.length} item(s) purchased successfully`, 'success')
+      logAction(editingGroup ? 'purchase_updated' : 'purchase_created', 'purchases', null, { items: rows.length, supplier: supplier.name.trim(), date, total_weight: totalWeight })
       resetForm()
       loadData()
     } catch (err) {
@@ -630,7 +666,7 @@ function PurchaseTab() {
     }
   }
 
-  const totalWeight = lineItems.reduce((sum, l) => sum + (parseFloat(l.weight) || 0), 0)
+  const totalWeight = lineItems.reduce((sum, l) => sum + (parseFloat(l.weight) || 0) * (parseInt(l.qty) || 1), 0)
 
   if (loading) return <div className="loading-center"><div className="spinner" /></div>
 
@@ -638,7 +674,7 @@ function PurchaseTab() {
     <div>
       <div className="card" style={{ marginBottom: '1rem' }}>
         <div className="card-header">
-          <h3 className="card-title">New Purchase</h3>
+          <h3 className="card-title">{editingGroup ? 'Edit Purchase' : 'New Purchase'}</h3>
         </div>
         <form onSubmit={savePurchase}>
           {/* Header: Supplier, Date, Notes */}
@@ -746,9 +782,14 @@ function PurchaseTab() {
             </span>
           </div>
 
-          <button type="submit" className="btn btn-primary btn-full" disabled={saving}>
-            {saving ? 'Saving...' : <><Plus size={16} /> Save Purchase</>}
+          <button type="submit" className="btn btn-primary btn-full" disabled={saving} style={{ marginBottom: '8px' }}>
+            {saving ? 'Saving...' : <><Plus size={16} /> {editingGroup ? 'Update Purchase' : 'Save Purchase'}</>}
           </button>
+          {editingGroup && (
+            <button type="button" className="btn btn-outline btn-full" onClick={resetForm}>
+              <RotateCcw size={14} /> Cancel Edit
+            </button>
+          )}
         </form>
       </div>
 
@@ -768,25 +809,28 @@ function PurchaseTab() {
             p.purity?.toLowerCase().includes(s) ||
             (Number(p.weight) || 0).toFixed(3).includes(search)
         })
+        // Group by purchase entry (all rows of one purchase share created_at)
         const grouped = {}
         filtered.forEach(p => {
-          const d = p.date || 'Unknown'
-          if (!grouped[d]) grouped[d] = []
-          grouped[d].push(p)
+          const k = p.created_at || `row-${p.id}`
+          if (!grouped[k]) grouped[k] = []
+          grouped[k].push(p)
         })
-        const sortedDates = Object.keys(grouped).sort().reverse()
+        const sortedKeys = Object.keys(grouped).sort().reverse()
         return (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            {sortedDates.length === 0 && (
+            {sortedKeys.length === 0 && (
               <div className="empty-state"><p>No purchases yet</p></div>
             )}
-            {sortedDates.map(date => {
-              const isOpen = expandedDates[date]
-              const items = grouped[date]
+            {sortedKeys.map(key => {
+              const isOpen = expandedDates[key]
+              const items = grouped[key]
+              const anySold = items.some(p => (p.sold_pcs || 0) > 0)
+              const d = items[0]?.date || 'Unknown'
               return (
-                <div key={date} style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
+                <div key={key} style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
                   <div
-                    onClick={() => setExpandedDates(prev => ({ ...prev, [date]: !prev[date] }))}
+                    onClick={() => setExpandedDates(prev => ({ ...prev, [key]: !prev[key] }))}
                     style={{
                       display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                       padding: '0.5rem 0.75rem', cursor: 'pointer',
@@ -794,8 +838,20 @@ function PurchaseTab() {
                       fontWeight: 600, fontSize: '0.85rem'
                     }}
                   >
-                    <span>{date} — {items.length} item{items.length > 1 ? 's' : ''}</span>
-                    <span style={{ transform: isOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▾</span>
+                    <span>{d} — {items[0]?.supplier_name || 'Unknown'} — {items.length} item{items.length > 1 ? 's' : ''}</span>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline"
+                        title={anySold ? 'Edit disabled — an item in this purchase is already sold' : 'Edit purchase'}
+                        disabled={anySold}
+                        onClick={(e) => { e.stopPropagation(); startEdit(key) }}
+                        style={{ display: 'flex', alignItems: 'center', gap: '4px' }}
+                      >
+                        <Edit2 size={13} /> Edit
+                      </button>
+                      <span style={{ transform: isOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▾</span>
+                    </span>
                   </div>
                   {isOpen && (
                     <div className="table-wrapper" style={{ border: 'none', margin: 0 }}>

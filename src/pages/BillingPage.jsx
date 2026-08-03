@@ -402,7 +402,7 @@ export default function BillingPage() {
   }
 
   function addSilverLine() {
-    setLineItems([...lineItems, { item_id: 'silver', description: 'Silver 925', weight: '', labour_pct: '0', tax_pct: '0', hallmark_charge: 0, huid_enabled: false, huid_code: '', is_silver: true, silver_rate: '', silver_type: 'silver_925' }])
+    setLineItems([...lineItems, { item_id: 'silver', description: 'Silver 925', weight: '', labour_pct: '0', tax_pct: DEFAULT_TAX_PCT.toString(), hallmark_charge: 0, huid_enabled: false, huid_code: '', is_silver: true, silver_rate: '', silver_type: 'silver_925' }])
   }
 
   function addGold18kLine() {
@@ -1428,7 +1428,10 @@ export default function BillingPage() {
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', borderTop: '1px solid var(--border)', marginTop: '4px', paddingTop: '8px' }}>
               <span className="text-sm">Discount</span>
-              <input className="input" type="number" step="0.01" min="0" value={discount} onChange={e => setDiscount(parseFloat(e.target.value) || 0)} style={{ width: '150px', textAlign: 'right' }} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {discAmt > 0 && <span className="font-mono" style={{ fontWeight: 700, color: 'var(--red)' }}>-{fmt(discAmt)}</span>}
+                <input className="input" type="number" step="0.01" min="0" value={discount} onChange={e => setDiscount(parseFloat(e.target.value) || 0)} style={{ width: '150px', textAlign: 'right' }} />
+              </div>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0' }}>
               <span className="text-sm">Round Off</span>

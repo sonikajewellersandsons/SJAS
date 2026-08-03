@@ -669,6 +669,52 @@ CREATE TRIGGER trg_purchase_to_stock
   AFTER INSERT ON purchases
   FOR EACH ROW EXECUTE FUNCTION trg_purchase_to_stock();
 
+-- Atomic edit of a purchase entry (identified by its created_at — all rows of
+-- one purchase share the transaction timestamp). Removes the old stock-ledger
+-- IN rows + old purchase rows, then re-inserts the updated ones. Refuses to
+-- touch lots that have already been sold (would corrupt sold_pcs tracking).
+CREATE OR REPLACE FUNCTION replace_purchase(p_created_at TIMESTAMPTZ, p_rows JSONB)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
+DECLARE
+  v_old_ids BIGINT[];
+BEGIN
+  IF NOT has_permission('allow_stock_edit') THEN
+    RAISE EXCEPTION 'Not authorized';
+  END IF;
+
+  SELECT array_agg(id) INTO v_old_ids
+  FROM purchases WHERE created_at = p_created_at;
+
+  IF v_old_ids IS NULL OR cardinality(v_old_ids) = 0 THEN
+    RAISE EXCEPTION 'Purchase not found';
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM purchases WHERE id = ANY(v_old_ids) AND sold_pcs > 0) THEN
+    RAISE EXCEPTION 'Cannot edit: one or more items in this purchase are already sold. Delete the linked invoices first.';
+  END IF;
+
+  DELETE FROM stock_ledger WHERE source_type = 'purchase' AND reference_id = ANY(v_old_ids);
+  DELETE FROM purchases WHERE id = ANY(v_old_ids);
+
+  INSERT INTO purchases (invoice_no, supplier_name, supplier_phone, item_id, purity, weight, pcs, rate, total, date, notes, created_by, huid)
+  SELECT
+    COALESCE(r->>'invoice_no', ''),
+    r->>'supplier_name',
+    r->>'supplier_phone',
+    (r->>'item_id')::BIGINT,
+    r->>'purity',
+    (r->>'weight')::NUMERIC,
+    (r->>'pcs')::INTEGER,
+    0,
+    0,
+    (r->>'date')::DATE,
+    r->>'notes',
+    (r->>'created_by')::BIGINT,
+    COALESCE((r->>'huid')::BOOLEAN, true)
+  FROM jsonb_array_elements(p_rows) r;
+END;
+$$;
+
 -- NOTE: Inward supply vouchers do NOT create stock ledger entries.
 -- They are valuation/adjustment instruments, not stock movements.
 
