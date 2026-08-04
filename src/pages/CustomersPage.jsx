@@ -108,8 +108,10 @@ export default function CustomersPage() {
   }
 
   const filtered = customers.filter(c => {
-    const q = search.toLowerCase()
+    const q = search.trim().toLowerCase()
     const digits = search.trim().replace(/^\+91\s*/, '').replace(/\D/g, '')
+    // Empty search → show all customers
+    if (!q && !digits) return true
     if (q && c.name.toLowerCase().includes(q)) return true
     if (search && c.phone?.includes(search)) return true
     if (digits && c.phone?.includes(digits)) return true
