@@ -246,13 +246,14 @@ export default function BillingPage() {
     const q = custSearch.toLowerCase()
     const digits = cleanPhone(custSearch)
     const digitsNo91 = digits.length > 10 && digits.startsWith('91') ? digits.slice(2) : digits
-    return customers.filter(c =>
-      c.name.toLowerCase().includes(q) ||
-      c.phone?.includes(custSearch) ||
-      c.phone?.includes(digits) ||
-      c.phone?.includes(digitsNo91) ||
-      c.aadhaar?.includes(digits)
-    )
+    return customers.filter(c => {
+      if (q && c.name.toLowerCase().includes(q)) return true
+      if (custSearch && c.phone?.includes(custSearch)) return true
+      if (digits && c.phone?.includes(digits)) return true
+      if (digitsNo91 && c.phone?.includes(digitsNo91)) return true
+      if (digits && c.aadhaar?.includes(digits)) return true
+      return false
+    })
   }, [customers, custSearch])
 
   useEffect(() => {
@@ -1547,6 +1548,7 @@ export default function BillingPage() {
                     setAdjAmt(v ? parseFloat(v.grand_total) || 0 : 0)
                   }}
                   placeholder="Select voucher..."
+                  freeText={false}
                 />
               </div>
             </div>

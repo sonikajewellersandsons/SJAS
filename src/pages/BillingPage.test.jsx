@@ -146,4 +146,20 @@ describe('BillingPage edit-save (regression: items deleted after insert)', () =>
     // Stock is re-processed against the NEW rows after the old ones are gone.
     expect(state.processCalls).toBe(2)
   })
+
+  it('filters the customer search dropdown while typing', async () => {
+    window.history.replaceState({}, '', '/billing')
+    render(
+      <ToastProvider>
+        <BillingPage />
+      </ToastProvider>
+    )
+
+    const input = await screen.findByPlaceholderText('Search customer by name, phone, aadhaar...')
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: 'rohi' } })
+
+    expect(await screen.findByText('Rohit')).toBeInTheDocument()
+    expect(screen.queryByText(/Add new customer/)).toBeInTheDocument()
+  })
 })

@@ -110,10 +110,11 @@ export default function CustomersPage() {
   const filtered = customers.filter(c => {
     const q = search.toLowerCase()
     const digits = search.trim().replace(/^\+91\s*/, '').replace(/\D/g, '')
-    return c.name.toLowerCase().includes(q) ||
-      c.phone?.includes(search) ||
-      c.phone?.includes(digits) ||
-      c.address?.toLowerCase().includes(q)
+    if (q && c.name.toLowerCase().includes(q)) return true
+    if (search && c.phone?.includes(search)) return true
+    if (digits && c.phone?.includes(digits)) return true
+    if (q && c.address?.toLowerCase().includes(q)) return true
+    return false
   })
 
   if (loading) return <div className="page"><div className="page-header"><h2>Customers</h2></div><div className="loading-center"><div className="spinner" /></div></div>

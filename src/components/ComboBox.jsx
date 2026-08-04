@@ -1,14 +1,22 @@
 import { useState, useRef, useEffect } from 'react'
 import { ChevronDown, X } from 'lucide-react'
 
-export default function ComboBox({ options, value, onChange, placeholder = 'Select...', className = '' }) {
+// freeText: allow the typed text itself to become the value (default true).
+// Pass freeText={false} for searchable-but-not-editable fields (e.g. the adj-bill
+// voucher picker): typing only filters, typed text is never committed, and the
+// selected label is shown only as display — never pushed back into the box as
+// editable text (which is what happened when focusing re-loaded the label).
+export default function ComboBox({ options, value, onChange, placeholder = 'Select...', className = '', freeText = true }) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [highlightIdx, setHighlightIdx] = useState(0)
   const inputRef = useRef(null)
   const containerRef = useRef(null)
 
-  const selected = options.find(o => o.value === value)
+  // Only treat a NON-empty value as "selected". An option with an empty value
+  // (e.g. a "— None —" reset row) must never be considered selected — otherwise
+  // focusing pre-fills the search with its label and filters the list to itself.
+  const selected = value ? options.find(o => o.value === value) : undefined
 
   const filtered = search
     ? options.filter(o => o.label.toLowerCase().includes(search.toLowerCase()))
@@ -36,7 +44,6 @@ export default function ComboBox({ options, value, onChange, placeholder = 'Sele
     onChange(opt.value)
     setOpen(false)
     setSearch('')
-    inputRef.current?.focus()
   }
 
   function handleClear(e) {
@@ -68,7 +75,7 @@ export default function ComboBox({ options, value, onChange, placeholder = 'Sele
       } else if (highlightIdx >= 0 && highlightIdx < filtered.length) {
         handleSelect(filtered[highlightIdx])
       } else {
-        onChange(search)
+        if (freeText) onChange(search)
         setOpen(false)
         setSearch('')
       }
@@ -76,7 +83,10 @@ export default function ComboBox({ options, value, onChange, placeholder = 'Sele
   }
 
   function handleFocus() {
-    if (selected) setSearch(selected.label)
+    // Searchable-only mode: keep the field empty so the user can type to
+    // filter immediately. The selected label lives in the closed box only.
+    if (!freeText) setSearch('')
+    else if (selected) setSearch(selected.label)
     setOpen(true)
   }
 
