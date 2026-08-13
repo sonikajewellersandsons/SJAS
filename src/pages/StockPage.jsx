@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import { useToast } from '../components/Toast'
 import ComboBox from '../components/ComboBox'
 import InvoiceModal from '../components/InvoiceModal'
+import HuidSplit from '../components/HuidSplit'
 import { logAction } from '../lib/audit'
 import {
   Package, Plus, Edit2, Search, X, Trash2,
@@ -372,6 +373,16 @@ function StockViewTab() {
     return true
   })
 
+  const gold22Lots = filtered.filter(s => s.purity === '22K')
+  const huidLots = gold22Lots.filter(s => s.huid)
+  const nonHuidLots = gold22Lots.filter(s => !s.huid)
+  const stockSplit = {
+    yesWeight: huidLots.reduce((s, lot) => s + (parseFloat(lot.weight) || 0) * (lot.avail_pcs || 0), 0),
+    yesPcs: huidLots.reduce((s, lot) => s + (lot.avail_pcs || 0), 0),
+    noWeight: nonHuidLots.reduce((s, lot) => s + (parseFloat(lot.weight) || 0) * (lot.avail_pcs || 0), 0),
+    noPcs: nonHuidLots.reduce((s, lot) => s + (lot.avail_pcs || 0), 0),
+  }
+
   if (loading) return <div className="loading-center"><div className="spinner" /></div>
 
   return (
@@ -416,6 +427,15 @@ function StockViewTab() {
       <p className="text-xs text-muted" style={{ marginBottom: '0.75rem' }}>
         Lots: <strong>{filtered.length}</strong> / {stock.length}
       </p>
+
+      <HuidSplit
+        yesLabel="HUID in Stock"
+        noLabel="HUID Not in Stock"
+        yesWeight={stockSplit.yesWeight}
+        yesPcs={stockSplit.yesPcs}
+        noWeight={stockSplit.noWeight}
+        noPcs={stockSplit.noPcs}
+      />
 
       <div className="table-wrapper">
         <table>
@@ -510,6 +530,8 @@ function PurchaseTab() {
   const [date, setDate] = useState(new Date().toISOString().split('T')[0])
   const [notes, setNotes] = useState('')
   const [editingGroup, setEditingGroup] = useState(null)
+  const [confirmDelete, setConfirmDelete] = useState(null)
+  const [deleting, setDeleting] = useState(false)
 
   // Item bucket
   const [lineItems, setLineItems] = useState([
@@ -574,6 +596,28 @@ function PurchaseTab() {
       setEditingGroup(createdAt)
       window.scrollTo({ top: 0, behavior: 'smooth' })
     } catch (err) { addToast('Failed to load purchase', 'error') }
+  }
+
+  async function handleDeleteConfirm() {
+    if (!confirmDelete) return
+    setDeleting(true)
+    try {
+      const { error } = await supabase.rpc('delete_purchase', { p_created_at: confirmDelete })
+      if (error) throw error
+      addToast('Purchase deleted', 'success')
+      logAction('purchase_deleted', 'purchases', null, { created_at: confirmDelete })
+      setConfirmDelete(null)
+      loadData()
+    } catch (err) {
+      if (err?.code === 'PGRST202') {
+        addToast('Delete failed — DB function missing. Re-run sql/schema.sql in the Supabase SQL Editor.', 'error')
+      } else {
+        addToast(err.message || 'Failed to delete purchase', 'error')
+      }
+      setConfirmDelete(null)
+    } finally {
+      setDeleting(false)
+    }
   }
 
   async function loadData() {
@@ -660,13 +704,43 @@ function PurchaseTab() {
       resetForm()
       loadData()
     } catch (err) {
-      addToast(err.message || 'Failed to save purchase', 'error')
+      if (err?.code === 'PGRST202') {
+        addToast('Update failed — DB function missing. Re-run sql/schema.sql in the Supabase SQL Editor.', 'error')
+      } else {
+        addToast(err.message || 'Failed to save purchase', 'error')
+      }
     } finally {
       setSaving(false)
     }
   }
 
   const totalWeight = lineItems.reduce((sum, l) => sum + (parseFloat(l.weight) || 0) * (parseInt(l.qty) || 1), 0)
+
+  const filteredPurchases = purchases.filter(p => {
+    if (!search) return true
+    const s = search.toLowerCase()
+    return p.item_master?.name?.toLowerCase().includes(s) ||
+      p.supplier_name?.toLowerCase().includes(s) ||
+      p.purity?.toLowerCase().includes(s) ||
+      (Number(p.weight) || 0).toFixed(3).includes(search)
+  })
+  const grouped = {}
+  filteredPurchases.forEach(p => {
+    const k = p.created_at || `row-${p.id}`
+    if (!grouped[k]) grouped[k] = []
+    grouped[k].push(p)
+  })
+  const sortedKeys = Object.keys(grouped).sort().reverse()
+
+  const gold22Purchases = filteredPurchases.filter(p => p.purity === '22K')
+  const huidPurchases = gold22Purchases.filter(p => p.huid)
+  const nonHuidPurchases = gold22Purchases.filter(p => !p.huid)
+  const purchaseSplit = {
+    yesWeight: huidPurchases.reduce((s, p) => s + (parseFloat(p.weight) || 0) * (p.pcs || 0), 0),
+    yesPcs: huidPurchases.reduce((s, p) => s + (p.pcs || 0), 0),
+    noWeight: nonHuidPurchases.reduce((s, p) => s + (parseFloat(p.weight) || 0) * (p.pcs || 0), 0),
+    noPcs: nonHuidPurchases.reduce((s, p) => s + (p.pcs || 0), 0),
+  }
 
   if (loading) return <div className="loading-center"><div className="spinner" /></div>
 
@@ -800,23 +874,16 @@ function PurchaseTab() {
           <input className="input" style={{ paddingLeft: '2.5rem' }} placeholder="Search purchases..." value={search} onChange={e => setSearch(e.target.value)} />
         </div>
       </div>
+
+      <HuidSplit
+        yesLabel="HUID Purchase"
+        noLabel="Non-HUID Purchase"
+        yesWeight={purchaseSplit.yesWeight}
+        yesPcs={purchaseSplit.yesPcs}
+        noWeight={purchaseSplit.noWeight}
+        noPcs={purchaseSplit.noPcs}
+      />
       {(() => {
-        const filtered = purchases.filter(p => {
-          if (!search) return true
-          const s = search.toLowerCase()
-          return p.item_master?.name?.toLowerCase().includes(s) ||
-            p.supplier_name?.toLowerCase().includes(s) ||
-            p.purity?.toLowerCase().includes(s) ||
-            (Number(p.weight) || 0).toFixed(3).includes(search)
-        })
-        // Group by purchase entry (all rows of one purchase share created_at)
-        const grouped = {}
-        filtered.forEach(p => {
-          const k = p.created_at || `row-${p.id}`
-          if (!grouped[k]) grouped[k] = []
-          grouped[k].push(p)
-        })
-        const sortedKeys = Object.keys(grouped).sort().reverse()
         return (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             {sortedKeys.length === 0 && (
@@ -849,6 +916,16 @@ function PurchaseTab() {
                         style={{ display: 'flex', alignItems: 'center', gap: '4px' }}
                       >
                         <Edit2 size={13} /> Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline"
+                        title={anySold ? 'Delete disabled — an item in this purchase is already sold' : 'Delete purchase'}
+                        disabled={anySold}
+                        onClick={(e) => { e.stopPropagation(); setConfirmDelete(key) }}
+                        style={{ display: 'flex', alignItems: 'center', gap: '4px', color: 'var(--red)' }}
+                      >
+                        <Trash2 size={13} /> Delete
                       </button>
                       <span style={{ transform: isOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▾</span>
                     </span>
@@ -889,6 +966,29 @@ function PurchaseTab() {
           </div>
         )
       })()}
+
+      {confirmDelete && (
+        <div className="modal-overlay" onClick={() => !deleting && setConfirmDelete(null)}>
+          <div className="modal-card" onClick={e => e.stopPropagation()}>
+            <h3 className="modal-title">Delete Purchase?</h3>
+            <p style={{ marginBottom: '1rem', color: 'var(--text-muted)' }}>
+              {(() => {
+                const g = purchases.filter(p => p.created_at === confirmDelete)
+                const first = g[0]
+                return first
+                  ? `${first.date?.slice(0, 10) || 'Unknown date'} — ${first.supplier_name || 'Unknown'} — ${g.length} item${g.length > 1 ? 's' : ''}. This also removes its stock entry and cannot be undone.`
+                  : 'This removes the purchase entry and its stock entry. This action cannot be undone.'
+              })()}
+            </p>
+            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+              <button className="btn btn-outline" onClick={() => setConfirmDelete(null)} disabled={deleting}>Cancel</button>
+              <button className="btn btn-danger" onClick={handleDeleteConfirm} disabled={deleting}>
+                {deleting ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {hasMore && (
         <div style={{ textAlign: 'center', marginTop: '0.75rem' }}>

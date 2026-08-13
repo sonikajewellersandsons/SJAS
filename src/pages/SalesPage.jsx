@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useToast } from '../components/Toast'
 import InvoiceModal from '../components/InvoiceModal'
+import HuidSplit from '../components/HuidSplit'
 import { downloadCsv } from '../lib/csv'
 import { Search, X, Download, ChevronDown } from 'lucide-react'
 
@@ -134,6 +135,16 @@ export default function SalesPage() {
 
   const totalWeight = filtered.reduce((s, it) => s + (parseFloat(it.weight) || 0), 0)
 
+  const gold22Sales = filtered.filter(it => it.item_master?.purity === '22K')
+  const huidSales = gold22Sales.filter(it => it.huid_code)
+  const nonHuidSales = gold22Sales.filter(it => !it.huid_code)
+  const saleSplit = {
+    yesWeight: huidSales.reduce((s, it) => s + (parseFloat(it.weight) || 0), 0),
+    yesPcs: huidSales.length,
+    noWeight: nonHuidSales.reduce((s, it) => s + (parseFloat(it.weight) || 0), 0),
+    noPcs: nonHuidSales.length,
+  }
+
   const matFiltered = matSales.filter(s => {
     const q = search.toLowerCase()
     if (q && !(s.invoice_no || '').toLowerCase().includes(q) && !(s.description || '').toLowerCase().includes(q)) return false
@@ -170,6 +181,15 @@ export default function SalesPage() {
         <span>Items: <strong>{filtered.length}</strong></span>
         <span>Weight: <strong>{totalWeight.toFixed(3)}g</strong></span>
       </div>
+
+      <HuidSplit
+        yesLabel="HUID Sale"
+        noLabel="Non-HUID Sale"
+        yesWeight={saleSplit.yesWeight}
+        yesPcs={saleSplit.yesPcs}
+        noWeight={saleSplit.noWeight}
+        noPcs={saleSplit.noPcs}
+      />
 
       {loading ? (
         <div className="loading-center"><div className="spinner" /></div>

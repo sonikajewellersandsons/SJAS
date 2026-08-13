@@ -709,9 +709,36 @@ BEGIN
     0,
     (r->>'date')::DATE,
     r->>'notes',
-    (r->>'created_by')::BIGINT,
+    (SELECT created_by FROM purchases WHERE id = ANY(v_old_ids) LIMIT 1),
     COALESCE((r->>'huid')::BOOLEAN, true)
   FROM jsonb_array_elements(p_rows) r;
+END;
+$$;
+
+-- Delete an entire purchase entry (all rows sharing created_at) plus its
+-- stock-ledger IN entries. Refuses to touch lots that have already been sold.
+CREATE OR REPLACE FUNCTION delete_purchase(p_created_at TIMESTAMPTZ)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
+DECLARE
+  v_old_ids BIGINT[];
+BEGIN
+  IF NOT has_permission('allow_stock_edit') THEN
+    RAISE EXCEPTION 'Not authorized';
+  END IF;
+
+  SELECT array_agg(id) INTO v_old_ids
+  FROM purchases WHERE created_at = p_created_at;
+
+  IF v_old_ids IS NULL OR cardinality(v_old_ids) = 0 THEN
+    RAISE EXCEPTION 'Purchase not found';
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM purchases WHERE id = ANY(v_old_ids) AND sold_pcs > 0) THEN
+    RAISE EXCEPTION 'Cannot delete: one or more items in this purchase are already sold. Delete the linked invoices first.';
+  END IF;
+
+  DELETE FROM stock_ledger WHERE source_type = 'purchase' AND reference_id = ANY(v_old_ids);
+  DELETE FROM purchases WHERE id = ANY(v_old_ids);
 END;
 $$;
 

@@ -105,8 +105,8 @@ Permissions stored as JSONB in `role_masters.permissions`.
 | `next_inv_no(p_type)` | Returns next full invoice number (`SJS/2026-27/001`) — atomic INSERT ... ON CONFLICT DO UPDATE |
 | `process_material_sale(p_invoice_id)` | Creates material_sales rows, decrements material_purchases.sold_weight for 18K/Silver |
 | `reverse_material_sale(p_invoice_id)` | Reverses material_sales and restores sold_weight |
-| `process_material_sale(p_invoice_id)` | Creates material_sales rows, decrements material_purchases.sold_weight for 18K/Silver |
-| `reverse_material_sale(p_invoice_id)` | Reverses material_sales and restores sold_weight |
+| `replace_purchase(p_created_at, p_rows)` | Atomic edit of a purchase group (all rows share `created_at`): deletes old rows + stock-ledger IN entries, re-inserts updated rows; refuses if any lot is sold; preserves original `created_by` |
+| `delete_purchase(p_created_at)` | Atomic delete of a purchase group: deletes stock-ledger IN entries + purchase rows; refuses if any lot is sold (`sold_pcs > 0`); permission-gated on `allow_stock_edit` |
 
 ## Deployment
 1. Run `sql/schema.sql` in Supabase SQL Editor (idempotent)
@@ -279,6 +279,13 @@ All 12 Critical, ~20 High, ~23 Medium, and ~12 Low bugs found in full audit fixe
 ### Objective
 Fix BillingPage performance (slow load/re-render), edit-mode stock validation for silver/gold 18K, PDF HSN display, and last-round audit bugs.
 
+### Added (Aug 2026 — HUID split summary cards)
+- **`src/components/HuidSplit.jsx`** — 2-card summary strip (green = HUID, orange = non-HUID) showing weight (g) + pieces for the current filtered view.
+- **SalesPage (Jewellery tab)** — "HUID Sale" / "Non-HUID Sale" cards: 22K items only (`item_master.purity === '22K'`), split on `huid_code` presence; materials/18K/silver excluded.
+- **StockPage Purchase tab** — "HUID Purchase" / "Non-HUID Purchase" cards: 22K rows only (`purity === '22K'`), split on `huid` boolean, weight = `weight × pcs` (matches total-weight convention).
+- **StockPage Stock tab** — "HUID in Stock" / "HUID not in Stock" cards: 22K lots only (`purity === '22K'`), split on lot `huid`, weight = `weight × avail_pcs` (available weight), pcs = `avail_pcs`.
+- All splits respect the page's current filters (search/date/HUID/status) — they reflect what's on screen.
+
 ### Completed
 
 **BillingPage Performance (6 fixes):**
@@ -415,6 +422,8 @@ Fix BillingPage performance (slow load/re-render), edit-mode stock validation fo
 - InwardSupplyPage: `generateInvNo`/`openCreateForm`/`loadEditVoucher`/`viewDetails` error-handled (no silent dead buttons).
 - BillingPage: `checkStock` aggregates available pcs across **all** matching lots (false "out of stock" when multiple identical lots exist).
 - StockPage: purchase quantity validated (`min 1` — `0` was silently saved as `1`).
+- **StockPage purchase delete (Aug 2026)** — Purchase groups now have a **Delete** button (themed confirm modal, `deleting` state, disabled + tooltip on sold lots) backed by the new `delete_purchase` RPC (deletes stock-ledger IN rows + purchase rows; refuses if any `sold_pcs > 0`). Edit/Delete failures with `PGRST202` (RPC missing from live DB — schema.sql deploy aborted partway) show a message telling the user to re-run `sql/schema.sql` in the Supabase SQL Editor.
+- **`replace_purchase` preserves `created_by`** — was reading it from client rows (always NULL on edit), wiping the original creator. Now reuses the old rows' `created_by`.
 - AuthContext: deactivated users are signed out and rejected at login with a clear message; audit user-id cache reset on logout (`resetAuditUserCache`).
 - Toast: unique ids via counter (was `Date.now()` collision).
 - RouteErrorBoundary: `key={location.pathname}` resets the error state on navigation.
