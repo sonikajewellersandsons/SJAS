@@ -21,14 +21,15 @@ export function financialYear(date) {
   return m >= 4 ? `${y}-${(y + 1).toString().slice(-2)}` : `${y - 1}-${y.toString().slice(-2)}`
 }
 
-// Extract the FY segment of a standard invoice number.
+// Extract the FY segment of a standard invoice/voucher number.
 //   'SJS/2026-27/001'      -> '2026-27'   (sale)
-//   'SJS/IWS/2026-27/001'  -> '2026-27'   (inward)
-//   anything else          -> undefined
+//   'SJS/IWS/2026-27/001'  -> '2026-27'   (inward supply)
+//   'SJS/LB/2026-27/005'   -> '2026-27'   (labour job)
+// Any second segment that is not itself a year is treated as a type prefix.
 export function fyFromInvNo(invNo) {
   const parts = String(invNo || '').split('/')
   if (parts[0] !== 'SJS') return undefined
-  return parts[1] === 'IWS' ? parts[2] : parts[1]
+  return /^\d{4}-\d{2}$/.test(parts[1]) ? parts[1] : parts[2]
 }
 
 // Extract the trailing sequence number of an invoice number if numeric.

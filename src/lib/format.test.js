@@ -37,6 +37,9 @@ describe('fyFromInvNo', () => {
   it('parses inward supply numbers', () => {
     expect(fyFromInvNo('SJS/IWS/2026-27/001')).toBe('2026-27')
   })
+  it('parses labour job numbers', () => {
+    expect(fyFromInvNo('SJS/LB/2026-27/005')).toBe('2026-27')
+  })
   it('returns undefined for non-standard numbers', () => {
     expect(fyFromInvNo('INV-123')).toBeUndefined()
     expect(fyFromInvNo('')).toBeUndefined()
@@ -48,6 +51,7 @@ describe('invNoSeq', () => {
   it('extracts the trailing sequence', () => {
     expect(invNoSeq('SJS/2026-27/050')).toBe(50)
     expect(invNoSeq('SJS/IWS/2026-27/003')).toBe(3)
+    expect(invNoSeq('SJS/LB/2026-27/007')).toBe(7)
   })
   it('returns null when there is no numeric suffix', () => {
     expect(invNoSeq('INV-123')).toBeNull()
