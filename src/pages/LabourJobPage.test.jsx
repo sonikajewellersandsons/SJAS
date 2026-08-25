@@ -181,4 +181,38 @@ describe('LabourJobPage', () => {
 
     await waitFor(() => expect(state.deletedId).toBe(5))
   })
+
+  it('lets you re-edit the same job immediately after a successful update', async () => {
+    state.jobs = [{
+      id: 5, inv_no: 'SJS/LB/2026-27/003', date: '2026-08-01',
+      customer_name: 'Ram Kumar', customer_phone: '',
+      service_charge: 10000, service_taxable: 8474.58, hallmark_charge: 500,
+      tax_pct: 18, service_tax: 1525.42, hallmark_tax: 90,
+      tax_total: 1615.42, grand_total: 10590, notes: '',
+    }]
+    state.items = [{ job_id: 5, sno: 1, item_name: 'Chain', purity: '22K', weight: 12.5 }]
+    render(<ToastProvider><LabourJobPage /></ToastProvider>)
+
+    // First edit pass
+    fireEvent.click(await screen.findByRole('button', { name: /History/i }))
+    await screen.findByText('SJS/LB/2026-27/003')
+    fireEvent.click(screen.getByTitle('Edit'))
+    expect(await screen.findByText(/Editing voucher/)).toBeInTheDocument()
+    expect(screen.getByDisplayValue('SJS/LB/2026-27/003')).toBeInTheDocument()
+
+    // Save the update — must send the row id
+    fireEvent.click(screen.getByRole('button', { name: /Update Job/i }))
+    await waitFor(() => expect(state.savedPayloads).toHaveLength(1))
+    expect(state.savedPayloads[0].id).toBe(5)
+
+    // Banner clears and a fresh number is generated
+    await waitFor(() => expect(screen.queryByText(/Editing voucher/)).not.toBeInTheDocument())
+
+    // Second edit pass on the SAME job must reload it (not show a blank form)
+    fireEvent.click(screen.getByRole('button', { name: /History/i }))
+    await screen.findByText('SJS/LB/2026-27/003')
+    fireEvent.click(screen.getByTitle('Edit'))
+    expect(await screen.findByText(/Editing voucher/)).toBeInTheDocument()
+    expect(screen.getByDisplayValue('SJS/LB/2026-27/003')).toBeInTheDocument()
+  })
 })

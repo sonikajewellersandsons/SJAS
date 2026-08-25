@@ -1377,7 +1377,7 @@ BEGIN
   IF v_id IS NOT NULL THEN
     UPDATE labour_jobs SET
       inv_no          = v_inv_no,
-      date            = COALESCE((p_job->>'date')::DATE, CURRENT_DATE),
+      date            = COALESCE(NULLIF(p_job->>'date', '')::DATE, CURRENT_DATE),
       customer_id     = (p_job->>'customer_id')::BIGINT,
       customer_name   = COALESCE(p_job->>'customer_name', ''),
       customer_address= COALESCE(p_job->>'customer_address', ''),
@@ -1410,7 +1410,7 @@ BEGIN
       grand_total, notes, created_by
     ) VALUES (
       v_inv_no,
-      COALESCE((p_job->>'date')::DATE, CURRENT_DATE),
+      COALESCE(NULLIF(p_job->>'date', '')::DATE, CURRENT_DATE),
       (p_job->>'customer_id')::BIGINT,
       COALESCE(p_job->>'customer_name', ''),
       COALESCE(p_job->>'customer_address', ''),

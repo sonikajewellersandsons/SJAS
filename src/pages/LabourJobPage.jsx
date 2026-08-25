@@ -148,10 +148,13 @@ function NewJobTab({ editJob, clearEdit }) {
     return () => { cancelled = true }
   }, [])
 
-  // Apply / clear an incoming edit job from the History tab
+  // Apply / clear an incoming edit job from the History tab.
+  // Tracked by OBJECT reference, not id — History always hands us a fresh
+  // object per click, so re-editing the same job re-applies even after a
+  // successful save (an id-based guard would skip it and show a blank form).
   useEffect(() => {
-    if (editJob && appliedEditRef.current !== editJob.id) {
-      appliedEditRef.current = editJob.id
+    if (editJob && appliedEditRef.current !== editJob) {
+      appliedEditRef.current = editJob
       applyEdit(editJob)
     } else if (!editJob && appliedEditRef.current !== null) {
       appliedEditRef.current = null
@@ -354,8 +357,14 @@ function NewJobTab({ editJob, clearEdit }) {
         { inv_no: saved?.job_inv_no || payload.inv_no, grand_total: totals.grandTotal, customer: custFields.customer_name })
       addToast(`Labour job ${saved?.job_inv_no || payload.inv_no} ${editMode ? 'updated' : 'saved'}`, 'success')
 
-      setEditMode(false)
-      await resetForm(true)
+      if (editMode) {
+        // Clears the parent's editJob — the cleanup effect resets the form and
+        // regenerates a fresh voucher number. Also lets History re-edit this
+        // same job immediately (the ref-based apply guard needs editJob gone).
+        clearEdit()
+      } else {
+        await resetForm(true)
+      }
     } catch (err) {
       console.error(err)
       addToast(err.message || 'Failed to save labour job', 'error')

@@ -508,6 +508,12 @@ function buildLabourHtml(job: LabourJob, items: LabourItem[], customer: Customer
   const taxPct = Number(job.tax_pct) || 18
   const totalWeight = items.reduce((sum, it) => sum + (Number(it.weight) || 0), 0)
 
+  // CGST/SGST halves must sum EXACTLY to the stored tax (odd final paisa)
+  const svcCgst = Math.round((svcTax / 2) * 100) / 100
+  const svcSgst = Math.round((svcTax - svcCgst) * 100) / 100
+  const hallCgst = Math.round((hallTax / 2) * 100) / 100
+  const hallSgst = Math.round((hallTax - hallCgst) * 100) / 100
+
   const itemRows = items.map((it, i) => `
 <tr class="datarow">
   <td class="c">${it.sno ?? i + 1}</td>
@@ -597,16 +603,16 @@ ${itemRows}
 ${isInterState ? `
 <tr class="subrow"><td></td><td class="r i">IGST @ ${taxPct}% on Service</td><td class="r b">&#8377;${fmt(svcTax)}</td></tr>
 ` : `
-<tr class="subrow"><td></td><td class="r i">CGST @ ${taxPct / 2}% on Service</td><td class="r b">&#8377;${fmt(svcTax / 2)}</td></tr>
-<tr class="subrow"><td></td><td class="r i">SGST @ ${taxPct / 2}% on Service</td><td class="r b">&#8377;${fmt(svcTax / 2)}</td></tr>
+<tr class="subrow"><td></td><td class="r i">CGST @ ${taxPct / 2}% on Service</td><td class="r b">&#8377;${fmt(svcCgst)}</td></tr>
+<tr class="subrow"><td></td><td class="r i">SGST @ ${taxPct / 2}% on Service</td><td class="r b">&#8377;${fmt(svcSgst)}</td></tr>
 `}
 ${hallCharge > 0 ? `
 <tr class="subrow hm-gap"><td></td><td class="r i">Hallmark Charges</td><td class="r b">&#8377;${fmt(hallCharge)}</td></tr>
 ${isInterState ? `
 <tr class="subrow"><td></td><td class="r i">IGST @ ${taxPct}% on Hallmark</td><td class="r b">&#8377;${fmt(hallTax)}</td></tr>
 ` : `
-<tr class="subrow"><td></td><td class="r i">CGST @ ${taxPct / 2}% on Hallmark</td><td class="r b">&#8377;${fmt(hallTax / 2)}</td></tr>
-<tr class="subrow"><td></td><td class="r i">SGST @ ${taxPct / 2}% on Hallmark</td><td class="r b">&#8377;${fmt(hallTax / 2)}</td></tr>
+<tr class="subrow"><td></td><td class="r i">CGST @ ${taxPct / 2}% on Hallmark</td><td class="r b">&#8377;${fmt(hallCgst)}</td></tr>
+<tr class="subrow"><td></td><td class="r i">SGST @ ${taxPct / 2}% on Hallmark</td><td class="r b">&#8377;${fmt(hallSgst)}</td></tr>
 `}` : ''}
 <tr class="totalrow">
   <td colspan="2" class="r">Grand Total</td>
