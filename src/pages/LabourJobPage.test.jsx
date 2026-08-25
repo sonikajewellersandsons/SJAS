@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, within } from '@testing-library/rea
 
 const state = vi.hoisted(() => ({
   customers: [],
+  masterItems: [],
   seqLastNo: 0,
   jobs: [],
   items: [],
@@ -16,6 +17,8 @@ vi.mock('../lib/supabase', () => {
     switch (ctx.table) {
       case 'customers':
         return { data: state.customers, error: null }
+      case 'item_master':
+        return { data: state.masterItems, error: null }
       case 'inv_sequences':
         // queried with .eq('type','labour').eq('fy', fy).maybeSingle()
         return { data: state.seqLastNo > 0 ? { last_no: state.seqLastNo } : null, error: null }
@@ -85,8 +88,10 @@ async function fillAndSave() {
   fireEvent.change(search, { target: { value: 'Ram' } })
   fireEvent.mouseDown(await screen.findByText('Ram Kumar'))
 
-  // One item line
-  fireEvent.change(screen.getByPlaceholderText(/Chain, Bangles/), { target: { value: 'Chain' } })
+  // Item name via the master-data ComboBox (type to filter, Enter commits)
+  const itemInput = screen.getByPlaceholderText('Type to search item...')
+  fireEvent.change(itemInput, { target: { value: 'Chain' } })
+  fireEvent.keyDown(itemInput, { key: 'Enter' })
   fireEvent.change(screen.getByPlaceholderText('0.000'), { target: { value: '12.5' } })
 
   // Charges — service ₹10,000 inclusive; hallmark left empty
@@ -101,6 +106,11 @@ describe('LabourJobPage', () => {
     state.customers = [
       { id: 3, name: 'Ram Kumar', phone: '9876543210', address: 'Faridabad', state: 'Haryana', aadhaar: '111122223333', gstin: '' },
     ]
+    state.masterItems = [
+      { name: 'Bangles', purity: '22K' },
+      { name: 'Chain', purity: '22K' },
+      { name: 'Ring', purity: '18K' },
+    ]
     state.seqLastNo = 0
     state.jobs = []
     state.items = []
@@ -113,6 +123,24 @@ describe('LabourJobPage', () => {
     render(<ToastProvider><LabourJobPage /></ToastProvider>)
     const noInput = await screen.findByDisplayValue(/^SJS\/LB\//)
     expect(noInput.value).toMatch(/^SJS\/LB\/\d{4}-\d{2}\/001$/)
+  })
+
+  it('item picker offers master names and auto-fills purity', async () => {
+    render(<ToastProvider><LabourJobPage /></ToastProvider>)
+    const itemInput = screen.getByPlaceholderText('Type to search item...')
+    // Open the dropdown and wait for master names to arrive
+    fireEvent.focus(itemInput)
+    expect(await screen.findByText('Bangles')).toBeInTheDocument()
+    fireEvent.change(itemInput, { target: { value: 'Ring' } })
+    fireEvent.keyDown(itemInput, { key: 'Enter' })
+    // 'Ring' is an 18K master item — purity dropdown must follow
+    expect(screen.getByDisplayValue('Ring')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('18K')).toBeInTheDocument()
+
+    // Custom (non-master) names still commit via free text
+    fireEvent.change(itemInput, { target: { value: 'Anklet Pair' } })
+    fireEvent.keyDown(itemInput, { key: 'Enter' })
+    expect(screen.getByDisplayValue('Anklet Pair')).toBeInTheDocument()
   })
 
   it('saves via the save_labour_job RPC with server-matching totals and cleaned items', async () => {

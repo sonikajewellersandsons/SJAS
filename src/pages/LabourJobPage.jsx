@@ -6,6 +6,7 @@ import { logAction } from '../lib/audit'
 import { fmt, cleanPhone, financialYear } from '../lib/format'
 import { computeLabourTotals, cleanLabourItems, LABOUR_PURITIES } from '../lib/labour'
 import { Search, X, Plus, Trash2, Eye, Printer, Pencil, Save, Hammer, Receipt, Ban } from 'lucide-react'
+import ComboBox from '../components/ComboBox'
 
 const FUNCTIONS_URL = import.meta.env.VITE_SUPABASE_URL + '/functions/v1'
 const PAGE_SIZE = 500
@@ -120,12 +121,41 @@ function NewJobTab({ editJob, clearEdit }) {
   async function generateJobNo() {
     if (editModeRef.current || appliedEditRef.current != null || editJobRef.current) return
     const fy = financialYear()
-    const { data: cur } = await supabase.from('inv_sequences').select('last_no').eq('type', 'labour').eq('fy', fy).maybeSingle()
+    const { data: cur, error } = await supabase.from('inv_sequences').select('last_no').eq('type', 'labour').eq('fy', fy).maybeSingle()
+    if (error) {
+      // Typical cause: the 'labour' sequence type / tables aren't in the live
+      // DB yet (PostgREST 400 on an unknown enum value). Form stays usable.
+      console.error(error)
+      addToast('Voucher sequence unavailable — run sql/schema.sql in Supabase SQL Editor', 'error')
+    }
     const seqNext = cur ? (parseInt(cur.last_no) || 0) + 1 : 1
     setInvNo(`SJS/LB/${fy}/${String(seqNext).padStart(3, '0')}`)
   }
 
   useEffect(() => { generateJobNo() }, [])
+
+  // Item names for the picker (from item_master). Free text still works —
+  // labour jobs are on the customer's own metal, which may not be in master.
+  const [masterItems, setMasterItems] = useState([])
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { data, error } = await supabase.from('item_master')
+          .select('name, purity')
+          .eq('active', true)
+          .order('name')
+        if (!cancelled) {
+          if (error) throw error
+          setMasterItems(data || [])
+        }
+      } catch (e) {
+        console.error(e)
+        // Non-critical: typing a custom name still works without master data
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
 
   // Customer list for the picker
   useEffect(() => {
@@ -235,6 +265,29 @@ function NewJobTab({ editJob, clearEdit }) {
 
   function updateLine(idx, patch) {
     setLineItems(items => items.map((it, i) => (i === idx ? { ...it, ...patch } : it)))
+  }
+
+  // Deduped item-name suggestions for the picker (unique names only —
+  // ComboBox keys options by value)
+  const itemNameOptions = useMemo(() => {
+    const seen = new Set()
+    const opts = []
+    for (const m of masterItems) {
+      if (!m.name || seen.has(m.name)) continue
+      seen.add(m.name)
+      opts.push({ value: m.name, label: m.name })
+    }
+    return opts
+  }, [masterItems])
+
+  // Picking a master item also fills its purity; typed custom names keep
+  // the current purity selection.
+  function pickItemName(idx, name) {
+    setLineItems(items => items.map((it, i) => {
+      if (i !== idx) return it
+      const mi = masterItems.find(m => m.name === name)
+      return { ...it, item_name: name, ...(mi?.purity ? { purity: mi.purity } : {}) }
+    }))
   }
 
   function removeLine(idx) {
@@ -379,7 +432,8 @@ function NewJobTab({ editJob, clearEdit }) {
     editModeRef.current = false
     editJobRef.current = null
     const fy = financialYear()
-    const { data: cur } = await supabase.from('inv_sequences').select('last_no').eq('type', 'labour').eq('fy', fy).maybeSingle()
+    const { data: cur, error } = await supabase.from('inv_sequences').select('last_no').eq('type', 'labour').eq('fy', fy).maybeSingle()
+    if (error) console.error(error)
     const seqNext = cur ? (parseInt(cur.last_no) || 0) + 1 : 1
     setInvNo(`SJS/LB/${fy}/${String(seqNext).padStart(3, '0')}`)
   }
@@ -572,8 +626,12 @@ function NewJobTab({ editJob, clearEdit }) {
                   <tr key={idx}>
                     <td>{idx + 1}</td>
                     <td>
-                      <input className="input" style={{ width: '100%' }} placeholder="e.g. Chain, Bangles…" value={it.item_name}
-                        onChange={e => updateLine(idx, { item_name: e.target.value })} maxLength={100} />
+                      <ComboBox
+                        options={itemNameOptions}
+                        value={it.item_name}
+                        onChange={val => pickItemName(idx, val)}
+                        placeholder="Type to search item..."
+                      />
                     </td>
                     <td>
                       <select className="input" style={{ width: '100%' }} value={it.purity}
