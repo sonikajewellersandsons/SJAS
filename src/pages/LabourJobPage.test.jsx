@@ -157,7 +157,7 @@ describe('LabourJobPage', () => {
     expect(p.service_tax).toBe(1525.42)
     expect(p.hallmark_charge).toBe(0)
     expect(p.grand_total).toBe(10000)
-    expect(p.items).toEqual([{ sno: 1, item_name: 'Chain', purity: '22K', weight: 12.5 }])
+    expect(p.items).toEqual([{ sno: 1, item_name: 'Chain', purity: '22K', huid: '', weight: 12.5 }])
     expect(p.created_by).toBe(7)
   })
 

@@ -12,7 +12,7 @@ const FUNCTIONS_URL = import.meta.env.VITE_SUPABASE_URL + '/functions/v1'
 const PAGE_SIZE = 500
 
 // Blank row shape for the items editor
-const blankItem = () => ({ item_name: '', purity: '22K', weight: '' })
+const blankItem = () => ({ item_name: '', purity: '22K', huid: '', weight: '' })
 const blankNewCust = () => ({ name: '', phone: '', address: '', state: 'Haryana', aadhaar: '', pincode: '', gstin: '' })
 
 export default function LabourJobPage() {
@@ -214,6 +214,7 @@ function NewJobTab({ editJob, clearEdit }) {
     const rows = (job.items || []).map(it => ({
       item_name: it.item_name || '',
       purity: it.purity || '22K',
+      huid: it.huid || '',
       weight: String(it.weight ?? ''),
     }))
     setLineItems(rows.length > 0 ? rows : [blankItem()])
@@ -611,16 +612,17 @@ function NewJobTab({ editJob, clearEdit }) {
         </div>
         <div style={{ padding: '0 1rem' }}>
           {/* Header row */}
-          <div style={{ display: 'grid', gridTemplateColumns: '26px minmax(180px, 1fr) 110px 120px 36px', gap: '8px', alignItems: 'center', padding: '0.6rem 0', borderBottom: '1px solid var(--border)', fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '26px minmax(160px, 1fr) 100px 130px 110px 36px', gap: '8px', alignItems: 'center', padding: '0.6rem 0', borderBottom: '1px solid var(--border)', fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
             <span>#</span>
             <span>Item Name</span>
             <span>Purity</span>
+            <span>HUID</span>
             <span style={{ textAlign: 'right' }}>Weight (g)</span>
             <span></span>
           </div>
           {/* Line rows */}
           {lineItems.map((it, idx) => (
-            <div key={idx} style={{ display: 'grid', gridTemplateColumns: '26px minmax(180px, 1fr) 110px 120px 36px', gap: '8px', alignItems: 'center', padding: '0.5rem 0', borderBottom: idx < lineItems.length - 1 ? '1px solid var(--border)' : 'none' }}>
+            <div key={idx} style={{ display: 'grid', gridTemplateColumns: '26px minmax(160px, 1fr) 100px 130px 110px 36px', gap: '8px', alignItems: 'center', padding: '0.5rem 0', borderBottom: idx < lineItems.length - 1 ? '1px solid var(--border)' : 'none' }}>
               <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{idx + 1}</span>
               <ComboBox
                 options={itemNameOptions}
@@ -632,6 +634,8 @@ function NewJobTab({ editJob, clearEdit }) {
                 onChange={e => updateLine(idx, { purity: e.target.value })}>
                 {LABOUR_PURITIES.map(p => <option key={p} value={p}>{p}</option>)}
               </select>
+              <input type="text" className="input" style={{ width: '100%' }} placeholder="Optional"
+                value={it.huid} onChange={e => updateLine(idx, { huid: e.target.value.toUpperCase() })} />
               <input type="number" step="0.001" min="0" className="input" style={{ width: '100%', textAlign: 'right' }} placeholder="0.000"
                 value={it.weight} onChange={e => updateLine(idx, { weight: e.target.value })} />
               <button type="button" className="btn-icon btn-sm" title="Remove"
@@ -641,7 +645,8 @@ function NewJobTab({ editJob, clearEdit }) {
             </div>
           ))}
           {/* Footer: total weight */}
-          <div style={{ display: 'grid', gridTemplateColumns: '26px minmax(180px, 1fr) 110px 120px 36px', gap: '8px', alignItems: 'center', padding: '0.6rem 0' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '26px minmax(160px, 1fr) 100px 130px 110px 36px', gap: '8px', alignItems: 'center', padding: '0.6rem 0' }}>
+            <span></span>
             <span></span>
             <span></span>
             <span style={{ textAlign: 'right', fontWeight: 700, fontSize: '0.82rem', color: 'var(--text-muted)' }}>Total Weight</span>

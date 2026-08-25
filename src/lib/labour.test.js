@@ -76,9 +76,19 @@ describe('cleanLabourItems', () => {
     ])
     expect(r.error).toBeUndefined()
     expect(r.items).toEqual([
-      { sno: 1, item_name: 'Chain', purity: '22K', weight: 12.5 },
-      { sno: 2, item_name: 'Bangles', purity: '18K', weight: 30 },
+      { sno: 1, item_name: 'Chain', purity: '22K', huid: '', weight: 12.5 },
+      { sno: 2, item_name: 'Bangles', purity: '18K', huid: '', weight: 30 },
     ])
+  })
+
+  it('passes through huid and uppercases it', () => {
+    const r = cleanLabourItems([
+      { item_name: 'Chain', purity: '22K', huid: 'abc123', weight: '5' },
+      { item_name: 'Ring', purity: '18K', weight: '2' },
+    ])
+    expect(r.error).toBeUndefined()
+    expect(r.items[0].huid).toBe('abc123')
+    expect(r.items[1].huid).toBe('')
   })
 
   it('errors on a row with weight but no name', () => {

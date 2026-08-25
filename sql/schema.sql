@@ -1293,6 +1293,7 @@ CREATE TABLE IF NOT EXISTS labour_job_items (
   sno        INTEGER NOT NULL DEFAULT 1,
   item_name  TEXT NOT NULL DEFAULT '',
   purity     TEXT NOT NULL DEFAULT '22K',
+  huid       TEXT DEFAULT '',
   weight     NUMERIC(10,3) NOT NULL CHECK (weight > 0)
 );
 
@@ -1434,12 +1435,13 @@ BEGIN
     IF COALESCE(r->>'weight', '0')::NUMERIC <= 0 THEN
       RAISE EXCEPTION 'Item %: weight must be greater than 0', v_line_no;
     END IF;
-    INSERT INTO labour_job_items (job_id, sno, item_name, purity, weight)
+    INSERT INTO labour_job_items (job_id, sno, item_name, purity, huid, weight)
     VALUES (
       v_id,
       COALESCE((r->>'sno')::INTEGER, v_line_no),
       trim(r->>'item_name'),
       COALESCE(NULLIF(r->>'purity', ''), '22K'),
+      COALESCE(NULLIF(r->>'huid', ''), ''),
       (r->>'weight')::NUMERIC
     );
   END LOOP;

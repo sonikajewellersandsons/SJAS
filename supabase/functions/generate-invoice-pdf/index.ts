@@ -464,7 +464,7 @@ interface LabourJob {
   tax_total: number | string; grand_total: number | string
   notes?: string
 }
-interface LabourItem { sno?: number; item_name: string; purity: string; weight: number | string }
+interface LabourItem { sno?: number; item_name: string; purity: string; huid?: string; weight: number | string }
 
 const SAC_JOBWORK = '998861'    // Manufacturing services on physical inputs owned by others
 const SAC_HALLMARK = '998346'   // Same SAC used for hallmarking on regular invoices
@@ -519,6 +519,7 @@ function buildLabourHtml(job: LabourJob, items: LabourItem[], customer: Customer
   <td class="c">${it.sno ?? i + 1}</td>
   <td><span class="b">${esc(it.item_name)}</span></td>
   <td class="c">${esc(it.purity)}</td>
+  <td class="c" style="font-size: 0.78rem; letter-spacing: 0.03em;">${it.huid ? esc(it.huid) : '<span style="color:#aaa">—</span>'}</td>
   <td class="r" style="white-space: nowrap;">${fmtWt(it.weight)} gm</td>
 </tr>`).join('\n')
 
@@ -577,12 +578,13 @@ function buildLabourHtml(job: LabourJob, items: LabourItem[], customer: Customer
   <th style="width: 40px;">Sl No.</th>
   <th>Description of Goods (Customer's Metal)</th>
   <th style="width: 90px;">Purity</th>
+  <th style="width: 120px;">HUID</th>
   <th style="width: 110px;">Weight</th>
 </tr></thead>
 <tbody>
 ${itemRows}
 <tr class="totalrow">
-  <td colspan="3" class="r">Total Weight</td>
+  <td colspan="4" class="r">Total Weight</td>
   <td class="r">${fmtWt(totalWeight)} gm</td>
 </tr>
 </tbody></table>
