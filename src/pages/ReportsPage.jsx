@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase'
 import { useToast } from '../components/Toast'
 import { downloadCsv } from '../lib/csv'
 import { monthEndDate } from '../lib/format'
-import { BarChart3, TrendingUp, Receipt, Users, FileText, Tag, PieChart, Download } from 'lucide-react'
+import { BarChart3, TrendingUp, Receipt, Users, FileText, Tag, PieChart, Download, Hammer } from 'lucide-react'
 
 function fmt(n) {
   return '₹' + (Number(n) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -20,6 +20,7 @@ const TABS = [
   { key: 'hsn', label: 'HSN Summary', icon: Tag },
   { key: 'customers', label: 'GSTR-1 Customers', icon: Users },
   { key: 'others', label: 'Payments & Category', icon: PieChart },
+  { key: 'labour', label: 'Labour Jobs', icon: Hammer },
 ]
 
 export default function ReportsPage() {
@@ -52,6 +53,7 @@ export default function ReportsPage() {
       {activeTab === 'hsn' && <HsnSummary year={year} addToast={addToast} />}
       {activeTab === 'customers' && <CustomerReport year={year} addToast={addToast} />}
       {activeTab === 'others' && <OthersReport year={year} addToast={addToast} />}
+      {activeTab === 'labour' && <LabourReport year={year} addToast={addToast} />}
     </div>
   )
 }
@@ -287,6 +289,24 @@ function MonthDrillDown({ month, onClose, addToast }) {
 
 function TaxReport({ year, addToast }) {
   const { months, loading } = useMonthlyData(year, addToast)
+  // Labour GST is at 18%, so it must not mix into the goods table's
+  // 1.5%/3% rate math — shown as its own chip so total output tax is visible.
+  const [labourTax, setLabourTax] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { data, error } = await supabase
+          .from('labour_jobs')
+          .select('tax_total')
+          .gte('date', `${year}-04-01`)
+          .lte('date', `${parseInt(year) + 1}-03-31`)
+        if (!cancelled && !error) setLabourTax((data || []).reduce((s, j) => s + (parseFloat(j.tax_total) || 0), 0))
+      } catch { if (!cancelled) setLabourTax(null) }
+    })()
+    return () => { cancelled = true }
+  }, [year])
 
   const totalTax = months.reduce((s, m) => s + m.tax, 0)
   const totalTaxable = months.reduce((s, m) => s + m.taxable, 0)
@@ -312,9 +332,15 @@ function TaxReport({ year, addToast }) {
           })
         )}><Download size={14} /> CSV</button>
       </div>
-      <div style={{ display: 'flex', gap: '1rem', padding: '0.75rem 1rem', borderBottom: '1px solid var(--border)' }}>
+      <div style={{ display: 'flex', gap: '1rem', padding: '0.75rem 1rem', borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
         <div><span className="text-xs text-muted">Total Taxable Value</span><div style={{ fontWeight: 700 }}>{fmt(totalTaxable)}</div></div>
         <div><span className="text-xs text-muted">Total Tax</span><div style={{ fontWeight: 700, color: 'var(--red)' }}>{fmt(totalTax)}</div></div>
+        {labourTax != null && (
+          <>
+            <div><span className="text-xs text-muted">Labour GST (18%)</span><div style={{ fontWeight: 700, color: 'var(--red)' }}>{fmt(labourTax)}</div></div>
+            <div><span className="text-xs text-muted">Combined Output Tax</span><div style={{ fontWeight: 700 }}>{fmt(totalTax + labourTax)}</div></div>
+          </>
+        )}
         <div><span className="text-xs text-muted">Effective Tax Rate</span><div style={{ fontWeight: 700 }}>{totalTaxable > 0 ? ((totalTax / totalTaxable) * 100).toFixed(2) : '0.00'}%</div></div>
       </div>
       <div className="table-wrapper">
@@ -736,5 +762,148 @@ function OthersReport({ year, addToast }) {
         </div>
       </div>
     </>
+  )
+}
+
+/* ─── LABOUR JOBS REPORT TAB ───────────────────────── */
+
+function LabourReport({ year, addToast }) {
+  const [months, setMonths] = useState([])
+  const [loading, setLoading] = useState(true)
+  const fyStart = `${year}-04-01`
+  const fyEnd = `${parseInt(year) + 1}-03-31`
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    ;(async () => {
+      try {
+        const { data, error } = await supabase
+          .from('labour_jobs')
+          .select('date, customer_state, service_taxable, hallmark_charge, service_tax, hallmark_tax, grand_total')
+          .gte('date', fyStart)
+          .lte('date', fyEnd)
+          .order('date')
+        if (cancelled) return
+        if (error) throw error
+
+        const { data: settings } = await supabase.from('settings').select('value').eq('key', 'shop_state').maybeSingle()
+        if (cancelled) return
+        let shopState = 'haryana'
+        try { const val = settings?.value; if (val) shopState = JSON.parse(val).toLowerCase() } catch {}
+
+        // Labour GST is 18% (service + hallmark), unlike goods at 1.5%/3% —
+        // kept in its own table so the rate math stays honest.
+        const byMonth = {}
+        for (const j of (data || [])) {
+          const m = j.date ? j.date.slice(0, 7) : 'unknown'
+          if (!byMonth[m]) byMonth[m] = { count: 0, taxable: 0, svcTax: 0, hallmark: 0, hallTax: 0, intraSvc: 0, interSvc: 0, total: 0 }
+          const b = byMonth[m]
+          b.count++
+          b.taxable += parseFloat(j.service_taxable) || 0
+          b.svcTax += parseFloat(j.service_tax) || 0
+          b.hallmark += parseFloat(j.hallmark_charge) || 0
+          b.hallTax += parseFloat(j.hallmark_tax) || 0
+          b.total += parseFloat(j.grand_total) || 0
+          if ((j.customer_state || '').toLowerCase() === shopState) {
+            b.intraSvc += parseFloat(j.service_taxable) || 0
+          } else {
+            b.interSvc += parseFloat(j.service_taxable) || 0
+          }
+        }
+        setMonths(Object.entries(byMonth).sort((a, b) => a[0].localeCompare(b[0])).map(([m, d]) => ({ month: m, ...d })))
+      } catch (e) {
+        if (!cancelled) {
+          console.error(e)
+          const missing = e?.code === 'PGRST202' || e?.message?.includes('does not exist') || e?.message?.includes('schema cache')
+          addToast(missing
+            ? 'Labour tables missing — re-run sql/schema.sql in Supabase SQL Editor'
+            : 'Failed to load labour report', 'error')
+        }
+      } finally { if (!cancelled) setLoading(false) }
+    })()
+    return () => { cancelled = true }
+  }, [year])
+
+  const t = months.reduce((s, m) => ({
+    count: s.count + m.count,
+    taxable: s.taxable + m.taxable,
+    svcTax: s.svcTax + m.svcTax,
+    hallmark: s.hallmark + m.hallmark,
+    hallTax: s.hallTax + m.hallTax,
+    total: s.total + m.total,
+  }), { count: 0, taxable: 0, svcTax: 0, hallmark: 0, hallTax: 0, total: 0 })
+
+  if (loading) return <div className="loading-center"><div className="spinner" /></div>
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <h3 className="card-title">Labour Jobs — {year}-{parseInt(year)+1} (GST 18%)</h3>
+        <button className="btn btn-sm btn-outline" onClick={() => downloadCsv(
+          `labour_report_${year}.csv`,
+          ['Month', 'Jobs', 'Service Taxable', 'Service GST', 'Hallmark', 'Hallmark GST', 'Total Tax', 'Intra-state Taxable', 'Inter-state Taxable', 'Grand Total'],
+          months.map(m => [
+            m.month, m.count, m.taxable.toFixed(2), m.svcTax.toFixed(2), m.hallmark.toFixed(2),
+            m.hallTax.toFixed(2), (m.svcTax + m.hallTax).toFixed(2),
+            m.intraSvc.toFixed(2), m.interSvc.toFixed(2), m.total.toFixed(2),
+          ])
+        )}><Download size={14} /> CSV</button>
+      </div>
+      <div style={{ display: 'flex', gap: '1rem', padding: '0.75rem 1rem', borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
+        <div><span className="text-xs text-muted">Jobs</span><div style={{ fontWeight: 700 }}>{t.count}</div></div>
+        <div><span className="text-xs text-muted">Service Taxable</span><div style={{ fontWeight: 700 }}>{fmt(t.taxable)}</div></div>
+        <div><span className="text-xs text-muted">Labour GST</span><div style={{ fontWeight: 700, color: 'var(--red)' }}>{fmt(t.svcTax + t.hallTax)}</div></div>
+        <div><span className="text-xs text-muted">Hallmark</span><div style={{ fontWeight: 700 }}>{fmt(t.hallmark)}</div></div>
+        <div><span className="text-xs text-muted">Total Billed</span><div style={{ fontWeight: 700 }}>{fmt(t.total)}</div></div>
+      </div>
+      <div className="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Month</th>
+              <th style={{ textAlign: 'right' }}>Jobs</th>
+              <th style={{ textAlign: 'right' }}>Service Taxable</th>
+              <th style={{ textAlign: 'right' }}>Service GST</th>
+              <th style={{ textAlign: 'right' }}>Hallmark</th>
+              <th style={{ textAlign: 'right' }}>Hallmark GST</th>
+              <th style={{ textAlign: 'right' }}>Total Tax</th>
+              <th style={{ textAlign: 'right' }}>Grand Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {months.map(m => (
+              <tr key={m.month}>
+                <td style={{ fontWeight: 700 }}>{MONTHS[parseInt(m.month.split('-')[1]) - 1]} {m.month.split('-')[0]}</td>
+                <td style={{ textAlign: 'right' }}>{m.count}</td>
+                <td className="font-mono" style={{ textAlign: 'right' }}>{fmt(m.taxable)}</td>
+                <td className="font-mono" style={{ textAlign: 'right' }}>{fmt(m.svcTax)}</td>
+                <td className="font-mono" style={{ textAlign: 'right' }}>{fmt(m.hallmark)}</td>
+                <td className="font-mono" style={{ textAlign: 'right' }}>{fmt(m.hallTax)}</td>
+                <td className="font-mono" style={{ textAlign: 'right', color: 'var(--red)' }}>{fmt(m.svcTax + m.hallTax)}</td>
+                <td className="font-mono" style={{ textAlign: 'right', fontWeight: 700 }}>{fmt(m.total)}</td>
+              </tr>
+            ))}
+            {months.length === 0 && (
+              <tr><td colSpan={8}><div className="empty-state"><p>No labour jobs this year</p></div></td></tr>
+            )}
+          </tbody>
+          {months.length > 0 && (
+            <tfoot>
+              <tr style={{ fontWeight: 700, borderTop: '2px solid var(--border)' }}>
+                <td>Total</td>
+                <td style={{ textAlign: 'right' }}>{t.count}</td>
+                <td className="font-mono" style={{ textAlign: 'right' }}>{fmt(t.taxable)}</td>
+                <td className="font-mono" style={{ textAlign: 'right' }}>{fmt(t.svcTax)}</td>
+                <td className="font-mono" style={{ textAlign: 'right' }}>{fmt(t.hallmark)}</td>
+                <td className="font-mono" style={{ textAlign: 'right' }}>{fmt(t.hallTax)}</td>
+                <td className="font-mono" style={{ textAlign: 'right' }}>{fmt(t.svcTax + t.hallTax)}</td>
+                <td className="font-mono" style={{ textAlign: 'right' }}>{fmt(t.total)}</td>
+              </tr>
+            </tfoot>
+          )}
+        </table>
+      </div>
+    </div>
   )
 }

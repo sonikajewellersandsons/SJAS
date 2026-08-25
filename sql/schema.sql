@@ -364,6 +364,8 @@ BEGIN
 
   IF p_type = 'sale' THEN
     RETURN 'SJS/' || v_fy || '/' || LPAD(v_seq::TEXT, 3, '0');
+  ELSIF p_type = 'labour' THEN
+    RETURN 'SJS/LB/' || v_fy || '/' || LPAD(v_seq::TEXT, 3, '0');
   ELSE
     RETURN 'SJS/IWS/' || v_fy || '/' || LPAD(v_seq::TEXT, 3, '0');
   END IF;
@@ -1243,3 +1245,282 @@ ALTER TABLE material_purchases DROP CONSTRAINT IF EXISTS chk_mp_weight_positive;
 ALTER TABLE material_purchases ADD CONSTRAINT chk_mp_weight_positive CHECK (weight > 0);
 ALTER TABLE material_sales DROP CONSTRAINT IF EXISTS chk_ms_weight_positive;
 ALTER TABLE material_sales ADD CONSTRAINT chk_ms_weight_positive CHECK (weight > 0);
+
+-- ══════════════════════════════════════════════════════
+-- ─── LABOUR JOBS (job-work service vouchers) ───────────
+-- Customer supplies the metal; shop charges service +
+-- hallmark charges only. NO stock impact, no ledger rows.
+--
+-- Money model (per job):
+--   service_charge  = entered amount, INCLUSIVE of GST
+--   service_taxable = round(charge × 100/(100+pct), 2)
+--   service_tax     = charge − taxable   (exact, no drift)
+--   hallmark_charge = entered amount, EXCLUSIVE of GST
+--   hallmark_tax    = round(hallmark × pct/100, 2)
+--   grand_total     = charge + hallmark + hallmark_tax
+-- ══════════════════════════════════════════════════════
+
+ALTER TYPE inv_sequence_type ADD VALUE IF NOT EXISTS 'labour';
+
+CREATE TABLE IF NOT EXISTS labour_jobs (
+  id               BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  inv_no           TEXT NOT NULL UNIQUE,
+  date             DATE NOT NULL DEFAULT CURRENT_DATE,
+  customer_id      BIGINT REFERENCES customers(id),
+  -- Snapshot fields so reprints never change (same pattern as invoices)
+  customer_name    TEXT NOT NULL DEFAULT '',
+  customer_address TEXT DEFAULT '',
+  customer_phone   TEXT DEFAULT '',
+  customer_state   TEXT DEFAULT 'Haryana',
+  customer_gstin   TEXT DEFAULT '',
+  service_charge   NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (service_charge >= 0),
+  service_taxable  NUMERIC(12,2) NOT NULL DEFAULT 0,
+  hallmark_charge  NUMERIC(10,2) NOT NULL DEFAULT 0 CHECK (hallmark_charge >= 0),
+  tax_pct          NUMERIC(5,2)  NOT NULL DEFAULT 18,
+  service_tax      NUMERIC(10,2) NOT NULL DEFAULT 0,
+  hallmark_tax     NUMERIC(10,2) NOT NULL DEFAULT 0,
+  tax_total        NUMERIC(10,2) NOT NULL DEFAULT 0,
+  grand_total      NUMERIC(12,2) NOT NULL DEFAULT 0,
+  notes            TEXT DEFAULT '',
+  created_by       BIGINT,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS labour_job_items (
+  id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  job_id     BIGINT NOT NULL REFERENCES labour_jobs(id) ON DELETE CASCADE,
+  sno        INTEGER NOT NULL DEFAULT 1,
+  item_name  TEXT NOT NULL DEFAULT '',
+  purity     TEXT NOT NULL DEFAULT '22K',
+  weight     NUMERIC(10,3) NOT NULL CHECK (weight > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_labour_jobs_date ON labour_jobs(date);
+CREATE INDEX IF NOT EXISTS idx_labour_jobs_customer ON labour_jobs(customer_id);
+CREATE INDEX IF NOT EXISTS idx_labour_job_items_job ON labour_job_items(job_id);
+
+-- ─── LABOUR JOBS RPCs ──────────────────────────────────
+
+-- Atomic create/update for a labour job. Recomputes all derived amounts
+-- server-side (the client's numbers are display-only), guards duplicate
+-- voucher numbers, replaces the item lines in one transaction.
+CREATE OR REPLACE FUNCTION save_labour_job(p_job JSONB)
+RETURNS TABLE(job_id BIGINT, job_inv_no TEXT)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
+DECLARE
+  v_id            BIGINT;
+  v_inv_no        TEXT;
+  v_parts         TEXT[];
+  i               INTEGER;
+  v_fy            TEXT;
+  v_seq           INTEGER;
+  v_charge        NUMERIC;
+  v_hallmark      NUMERIC;
+  v_pct           NUMERIC;
+  v_taxable       NUMERIC;
+  v_service_tax   NUMERIC;
+  v_hall_tax      NUMERIC;
+  r               JSONB;
+  v_line_no       INTEGER := 0;
+BEGIN
+  IF NOT has_permission('allow_billing') THEN
+    RAISE EXCEPTION 'Not authorized';
+  END IF;
+
+  v_inv_no := NULLIF(trim(COALESCE(p_job->>'inv_no', '')), '');
+  IF v_inv_no IS NULL THEN
+    RAISE EXCEPTION 'Voucher number is required';
+  END IF;
+
+  v_charge   := COALESCE(NULLIF(p_job->>'service_charge', '')::NUMERIC, 0);
+  v_hallmark := COALESCE(NULLIF(p_job->>'hallmark_charge', '')::NUMERIC, 0);
+  v_pct      := COALESCE(NULLIF(p_job->>'tax_pct', '')::NUMERIC, 18);
+
+  IF v_charge < 0 OR v_hallmark < 0 THEN
+    RAISE EXCEPTION 'Charges cannot be negative';
+  END IF;
+
+  -- Derived amounts. Service charge is INCLUSIVE of GST; hallmark EXCLUSIVE.
+  -- taxable + tax always equals the entered charge exactly (no rounding drift).
+  v_taxable     := ROUND(v_charge * 100 / (100 + v_pct), 2);
+  v_service_tax := v_charge - v_taxable;
+  v_hall_tax    := ROUND(v_hallmark * v_pct / 100, 2);
+
+  -- Duplicate check — edit mode excludes the row being edited
+  v_id := NULLIF(p_job->>'id', '')::BIGINT;
+  IF EXISTS (SELECT 1 FROM labour_jobs WHERE inv_no = v_inv_no AND id <> COALESCE(v_id, -1)) THEN
+    RAISE EXCEPTION 'DUPLICATE_INV_NO: % is already in use', v_inv_no;
+  END IF;
+
+  -- Extract FY ({yyyy-yy}) and trailing sequence from the number, whatever
+  -- prefix format was used ('SJS/LB/2026-27/005' or a free-text override).
+  -- Only same-FY sequences bump inv_sequences; cross-FY overrides are ignored.
+  v_parts := string_to_array(v_inv_no, '/');
+  FOR i IN 1..COALESCE(array_length(v_parts, 1), 0) LOOP
+    IF v_parts[i] ~ '^\d{4}-\d{2}$' THEN v_fy := v_parts[i]; END IF;
+  END LOOP;
+  -- Regex-guarded cast: free-text overrides without a numeric tail are
+  -- simply ignored for sequencing instead of crashing the save.
+  IF COALESCE(array_length(v_parts, 1), 0) > 0
+     AND v_parts[array_length(v_parts, 1)] ~ '^\d+$' THEN
+    v_seq := v_parts[array_length(v_parts, 1)]::INTEGER;
+  END IF;
+
+  IF v_fy IS NOT NULL AND v_seq IS NOT NULL AND v_seq > 0 THEN
+    INSERT INTO inv_sequences (type, fy, last_no)
+    VALUES ('labour'::inv_sequence_type, v_fy, v_seq)
+    ON CONFLICT (type, fy)
+    DO UPDATE SET last_no = GREATEST(inv_sequences.last_no, EXCLUDED.last_no);
+  END IF;
+
+  IF v_id IS NOT NULL THEN
+    UPDATE labour_jobs SET
+      inv_no          = v_inv_no,
+      date            = COALESCE((p_job->>'date')::DATE, CURRENT_DATE),
+      customer_id     = (p_job->>'customer_id')::BIGINT,
+      customer_name   = COALESCE(p_job->>'customer_name', ''),
+      customer_address= COALESCE(p_job->>'customer_address', ''),
+      customer_phone  = COALESCE(p_job->>'customer_phone', ''),
+      customer_state  = COALESCE(p_job->>'customer_state', 'Haryana'),
+      customer_gstin  = COALESCE(p_job->>'customer_gstin', ''),
+      service_charge  = v_charge,
+      service_taxable = v_taxable,
+      hallmark_charge = v_hallmark,
+      tax_pct         = v_pct,
+      service_tax     = v_service_tax,
+      hallmark_tax    = v_hall_tax,
+      tax_total       = v_service_tax + v_hall_tax,
+      grand_total     = v_charge + v_hallmark + v_hall_tax,
+      notes           = COALESCE(p_job->>'notes', ''),
+      updated_at      = now()
+    WHERE id = v_id;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'Labour job % not found', v_id;
+    END IF;
+    -- Qualified column (li.job_id) so it can't collide with this function's
+    -- job_id OUT parameter — unqualified would raise 'ambiguous column'.
+    DELETE FROM labour_job_items li WHERE li.job_id = v_id;
+    -- created_by is preserved on edit (matches replace_purchase behaviour)
+  ELSE
+    INSERT INTO labour_jobs (
+      inv_no, date, customer_id, customer_name, customer_address, customer_phone,
+      customer_state, customer_gstin, service_charge, service_taxable,
+      hallmark_charge, tax_pct, service_tax, hallmark_tax, tax_total,
+      grand_total, notes, created_by
+    ) VALUES (
+      v_inv_no,
+      COALESCE((p_job->>'date')::DATE, CURRENT_DATE),
+      (p_job->>'customer_id')::BIGINT,
+      COALESCE(p_job->>'customer_name', ''),
+      COALESCE(p_job->>'customer_address', ''),
+      COALESCE(p_job->>'customer_phone', ''),
+      COALESCE(p_job->>'customer_state', 'Haryana'),
+      COALESCE(p_job->>'customer_gstin', ''),
+      v_charge, v_taxable, v_hallmark, v_pct, v_service_tax, v_hall_tax,
+      v_service_tax + v_hall_tax,
+      v_charge + v_hallmark + v_hall_tax,
+      COALESCE(p_job->>'notes', ''),
+      (p_job->>'created_by')::BIGINT
+    ) RETURNING id INTO v_id;
+  END IF;
+
+  -- Replace item lines
+  FOR r IN SELECT * FROM jsonb_array_elements(COALESCE(p_job->'items', '[]'::jsonb)) LOOP
+    v_line_no := v_line_no + 1;
+    IF trim(COALESCE(r->>'item_name', '')) = '' THEN
+      RAISE EXCEPTION 'Item %: name is required', v_line_no;
+    END IF;
+    IF COALESCE(r->>'weight', '0')::NUMERIC <= 0 THEN
+      RAISE EXCEPTION 'Item %: weight must be greater than 0', v_line_no;
+    END IF;
+    INSERT INTO labour_job_items (job_id, sno, item_name, purity, weight)
+    VALUES (
+      v_id,
+      COALESCE((r->>'sno')::INTEGER, v_line_no),
+      trim(r->>'item_name'),
+      COALESCE(NULLIF(r->>'purity', ''), '22K'),
+      (r->>'weight')::NUMERIC
+    );
+  END LOOP;
+
+  RETURN QUERY SELECT v_id, v_inv_no;
+END;
+$$;
+
+-- Delete a labour job any time (no stock linkage). Items cascade via FK.
+-- Sequence steps back only if the deleted job held the exact highest number
+-- of its FY, so deleting the latest voucher doesn't burn a number but
+-- deleting a middle one never creates duplicate-number risk.
+CREATE OR REPLACE FUNCTION delete_labour_job(p_job_id BIGINT)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
+DECLARE
+  v_inv_no TEXT;
+  v_parts  TEXT[];
+  i        INTEGER;
+  v_fy     TEXT;
+  v_seq    INTEGER;
+BEGIN
+  IF NOT has_permission('allow_billing') THEN
+    RAISE EXCEPTION 'Not authorized';
+  END IF;
+  IF p_job_id IS NULL THEN RETURN; END IF;
+
+  SELECT inv_no INTO v_inv_no FROM labour_jobs WHERE id = p_job_id;
+  IF v_inv_no IS NULL THEN RETURN; END IF;
+
+  DELETE FROM labour_jobs WHERE id = p_job_id;
+
+  v_parts := string_to_array(v_inv_no, '/');
+  FOR i IN 1..COALESCE(array_length(v_parts, 1), 0) LOOP
+    IF v_parts[i] ~ '^\d{4}-\d{2}$' THEN v_fy := v_parts[i]; END IF;
+  END LOOP;
+  IF COALESCE(array_length(v_parts, 1), 0) > 0
+     AND v_parts[array_length(v_parts, 1)] ~ '^\d+$' THEN
+    v_seq := v_parts[array_length(v_parts, 1)]::INTEGER;
+  END IF;
+
+  IF v_fy IS NOT NULL AND v_seq IS NOT NULL THEN
+    UPDATE inv_sequences SET last_no = last_no - 1
+    WHERE type = 'labour'::inv_sequence_type AND fy = v_fy
+      AND last_no = v_seq AND last_no > 0;
+  END IF;
+END;
+$$;
+
+-- ─── LABOUR JOBS RLS ───────────────────────────────────
+-- Read mirrors invoices (billing / reports / stock view);
+-- writes stay with allow_billing.
+
+ALTER TABLE labour_jobs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE labour_job_items ENABLE ROW LEVEL SECURITY;
+
+DO $$ BEGIN DROP POLICY IF EXISTS labour_jobs_read ON labour_jobs; END $$;
+CREATE POLICY labour_jobs_read ON labour_jobs FOR SELECT USING (
+  has_permission('allow_billing') OR has_permission('allow_reports') OR has_permission('allow_stock_view')
+);
+DO $$ BEGIN DROP POLICY IF EXISTS labour_jobs_write ON labour_jobs; END $$;
+CREATE POLICY labour_jobs_write ON labour_jobs FOR INSERT WITH CHECK (
+  has_permission('allow_billing')
+);
+DO $$ BEGIN DROP POLICY IF EXISTS labour_jobs_update ON labour_jobs; END $$;
+CREATE POLICY labour_jobs_update ON labour_jobs FOR UPDATE USING (
+  has_permission('allow_billing')
+);
+DO $$ BEGIN DROP POLICY IF EXISTS labour_jobs_delete ON labour_jobs; END $$;
+CREATE POLICY labour_jobs_delete ON labour_jobs FOR DELETE USING (
+  has_permission('allow_billing')
+);
+
+DO $$ BEGIN DROP POLICY IF EXISTS labour_job_items_read ON labour_job_items; END $$;
+CREATE POLICY labour_job_items_read ON labour_job_items FOR SELECT USING (
+  has_permission('allow_billing') OR has_permission('allow_reports') OR has_permission('allow_stock_view')
+);
+DO $$ BEGIN DROP POLICY IF EXISTS labour_job_items_write ON labour_job_items; END $$;
+CREATE POLICY labour_job_items_write ON labour_job_items FOR INSERT WITH CHECK (
+  has_permission('allow_billing')
+);
+DO $$ BEGIN DROP POLICY IF EXISTS labour_job_items_delete ON labour_job_items; END $$;
+CREATE POLICY labour_job_items_delete ON labour_job_items FOR DELETE USING (
+  has_permission('allow_billing')
+);
