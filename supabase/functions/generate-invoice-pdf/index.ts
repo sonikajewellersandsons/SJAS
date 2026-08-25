@@ -596,23 +596,27 @@ ${itemRows}
 </tr></thead>
 <tbody>
 <tr class="datarow hm-gap">
-  <td><span class="b">Labour / Service Charges</span><br><span class="sm">&#8377;${fmt(svcCharge)} inclusive of GST @ ${taxPct}% &middot; Taxable value shown below</span></td>
+  <td><span class="b">Labour / Service Charges</span><br><span class="sm">&#8377;${fmt(svcCharge)} inclusive of GST @ ${taxPct}%</span></td>
   <td class="c">${SAC_JOBWORK}</td>
   <td class="r b">&#8377;${fmt(svcTaxable)}</td>
 </tr>
 ${isInterState ? `
-<tr class="subrow"><td></td><td class="r i">IGST @ ${taxPct}% on Service</td><td class="r b">&#8377;${fmt(svcTax)}</td></tr>
+<tr class="subrow"><td class="r i" style="padding-right: 24px;">IGST @ ${taxPct}% on Service</td><td></td><td class="r b">&#8377;${fmt(svcTax)}</td></tr>
 ` : `
-<tr class="subrow"><td></td><td class="r i">CGST @ ${taxPct / 2}% on Service</td><td class="r b">&#8377;${fmt(svcCgst)}</td></tr>
-<tr class="subrow"><td></td><td class="r i">SGST @ ${taxPct / 2}% on Service</td><td class="r b">&#8377;${fmt(svcSgst)}</td></tr>
+<tr class="subrow"><td class="r i" style="padding-right: 24px;">CGST @ ${taxPct / 2}% on Service</td><td></td><td class="r b">&#8377;${fmt(svcCgst)}</td></tr>
+<tr class="subrow"><td class="r i" style="padding-right: 24px;">SGST @ ${taxPct / 2}% on Service</td><td></td><td class="r b">&#8377;${fmt(svcSgst)}</td></tr>
 `}
 ${hallCharge > 0 ? `
-<tr class="subrow hm-gap"><td></td><td class="r i">Hallmark Charges</td><td class="r b">&#8377;${fmt(hallCharge)}</td></tr>
+<tr class="datarow hm-gap">
+  <td><span class="b">Hallmark Charges</span></td>
+  <td class="c">${SAC_HALLMARK}</td>
+  <td class="r b">&#8377;${fmt(hallCharge)}</td>
+</tr>
 ${isInterState ? `
-<tr class="subrow"><td></td><td class="r i">IGST @ ${taxPct}% on Hallmark</td><td class="r b">&#8377;${fmt(hallTax)}</td></tr>
+<tr class="subrow"><td class="r i" style="padding-right: 24px;">IGST @ ${taxPct}% on Hallmark</td><td></td><td class="r b">&#8377;${fmt(hallTax)}</td></tr>
 ` : `
-<tr class="subrow"><td></td><td class="r i">CGST @ ${taxPct / 2}% on Hallmark</td><td class="r b">&#8377;${fmt(hallCgst)}</td></tr>
-<tr class="subrow"><td></td><td class="r i">SGST @ ${taxPct / 2}% on Hallmark</td><td class="r b">&#8377;${fmt(hallSgst)}</td></tr>
+<tr class="subrow"><td class="r i" style="padding-right: 24px;">CGST @ ${taxPct / 2}% on Hallmark</td><td></td><td class="r b">&#8377;${fmt(hallCgst)}</td></tr>
+<tr class="subrow"><td class="r i" style="padding-right: 24px;">SGST @ ${taxPct / 2}% on Hallmark</td><td></td><td class="r b">&#8377;${fmt(hallSgst)}</td></tr>
 `}` : ''}
 <tr class="totalrow">
   <td colspan="2" class="r">Grand Total</td>
@@ -654,8 +658,8 @@ ${isInterState ? `
 
     <!-- Floating stamp + signature — positioned relative to .invoice -->
     <div style="position: absolute; bottom: 30px; right: -4px; width: 220px; height: 180px; z-index: -1; pointer-events: none;">
-      <img src="${STAMP_IMG}">
-      <img src="${SIGN_IMG}">
+      <img src="${STAMP_IMG}" style="position: absolute; right: 0; top: 0; width: 200px; z-index: 1;" />
+      <img src="${SIGN_IMG}" style="position: absolute; right: 55px; top: 45px; width: 142px; z-index: 2; transform: rotate(-3deg);" />
     </div>
 <!-- Signatures -->
 <table><tr>

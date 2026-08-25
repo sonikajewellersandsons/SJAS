@@ -609,57 +609,44 @@ function NewJobTab({ editJob, clearEdit }) {
             <Plus size={14} /> Add Item
           </button>
         </div>
-        <div style={{ padding: '0.75rem 1rem' }}>
-          <div className="table-wrapper">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th style={{ width: '36px' }}>#</th>
-                  <th>Item Name</th>
-                  <th style={{ width: '110px' }}>Purity</th>
-                  <th style={{ width: '130px' }}>Weight (g)</th>
-                  <th style={{ width: '44px' }}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {lineItems.map((it, idx) => (
-                  <tr key={idx}>
-                    <td>{idx + 1}</td>
-                    <td>
-                      <ComboBox
-                        options={itemNameOptions}
-                        value={it.item_name}
-                        onChange={val => pickItemName(idx, val)}
-                        placeholder="Type to search item..."
-                      />
-                    </td>
-                    <td>
-                      <select className="input" style={{ width: '100%' }} value={it.purity}
-                        onChange={e => updateLine(idx, { purity: e.target.value })}>
-                        {LABOUR_PURITIES.map(p => <option key={p} value={p}>{p}</option>)}
-                      </select>
-                    </td>
-                    <td>
-                      <input type="number" step="0.001" min="0" className="input" style={{ width: '100%', textAlign: 'right' }} placeholder="0.000"
-                        value={it.weight} onChange={e => updateLine(idx, { weight: e.target.value })} />
-                    </td>
-                    <td>
-                      <button type="button" className="btn-icon btn-sm" title="Remove"
-                        onClick={() => removeLine(idx)} disabled={lineItems.length === 1}>
-                        <Trash2 size={15} />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot>
-                <tr>
-                  <td colSpan="3" style={{ textAlign: 'right', fontWeight: 700 }}>Total Weight</td>
-                  <td style={{ textAlign: 'right', fontWeight: 700 }}>{totalWeight.toFixed(3)} g</td>
-                  <td></td>
-                </tr>
-              </tfoot>
-            </table>
+        <div style={{ padding: '0 1rem' }}>
+          {/* Header row */}
+          <div style={{ display: 'grid', gridTemplateColumns: '26px minmax(180px, 1fr) 110px 120px 36px', gap: '8px', alignItems: 'center', padding: '0.6rem 0', borderBottom: '1px solid var(--border)', fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            <span>#</span>
+            <span>Item Name</span>
+            <span>Purity</span>
+            <span style={{ textAlign: 'right' }}>Weight (g)</span>
+            <span></span>
+          </div>
+          {/* Line rows */}
+          {lineItems.map((it, idx) => (
+            <div key={idx} style={{ display: 'grid', gridTemplateColumns: '26px minmax(180px, 1fr) 110px 120px 36px', gap: '8px', alignItems: 'center', padding: '0.5rem 0', borderBottom: idx < lineItems.length - 1 ? '1px solid var(--border)' : 'none' }}>
+              <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{idx + 1}</span>
+              <ComboBox
+                options={itemNameOptions}
+                value={it.item_name}
+                onChange={val => pickItemName(idx, val)}
+                placeholder="Type to search item..."
+              />
+              <select className="input" style={{ width: '100%' }} value={it.purity}
+                onChange={e => updateLine(idx, { purity: e.target.value })}>
+                {LABOUR_PURITIES.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+              <input type="number" step="0.001" min="0" className="input" style={{ width: '100%', textAlign: 'right' }} placeholder="0.000"
+                value={it.weight} onChange={e => updateLine(idx, { weight: e.target.value })} />
+              <button type="button" className="btn-icon btn-sm" title="Remove"
+                onClick={() => removeLine(idx)} disabled={lineItems.length === 1}>
+                <Trash2 size={15} />
+              </button>
+            </div>
+          ))}
+          {/* Footer: total weight */}
+          <div style={{ display: 'grid', gridTemplateColumns: '26px minmax(180px, 1fr) 110px 120px 36px', gap: '8px', alignItems: 'center', padding: '0.6rem 0' }}>
+            <span></span>
+            <span></span>
+            <span style={{ textAlign: 'right', fontWeight: 700, fontSize: '0.82rem', color: 'var(--text-muted)' }}>Total Weight</span>
+            <span style={{ textAlign: 'right', fontWeight: 700, fontSize: '0.9rem' }}>{totalWeight.toFixed(3)} g</span>
+            <span></span>
           </div>
         </div>
       </div>
