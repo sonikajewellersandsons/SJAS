@@ -60,7 +60,7 @@ export function cleanLabourItems(items) {
       sno: rows.length + 1,
       item_name: name,
       purity: String(raw.purity || '22K').trim() || '22K',
-      huid: String(raw.huid || '').trim(),
+      huid: String(raw.huid || '').trim().toUpperCase(),
       weight,
     })
   }

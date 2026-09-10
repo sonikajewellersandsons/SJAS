@@ -1444,7 +1444,7 @@ BEGIN
       COALESCE((r->>'sno')::INTEGER, v_line_no),
       trim(r->>'item_name'),
       COALESCE(NULLIF(r->>'purity', ''), '22K'),
-      COALESCE(NULLIF(r->>'huid', ''), ''),
+      COALESCE(NULLIF(upper(trim(r->>'huid')), ''), ''),
       (r->>'weight')::NUMERIC
     );
   END LOOP;

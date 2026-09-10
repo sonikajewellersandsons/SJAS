@@ -83,11 +83,11 @@ describe('cleanLabourItems', () => {
 
   it('passes through huid and uppercases it', () => {
     const r = cleanLabourItems([
-      { item_name: 'Chain', purity: '22K', huid: 'abc123', weight: '5' },
+      { item_name: 'Chain', purity: '22K', huid: ' abc123 ', weight: '5' },
       { item_name: 'Ring', purity: '18K', weight: '2' },
     ])
     expect(r.error).toBeUndefined()
-    expect(r.items[0].huid).toBe('abc123')
+    expect(r.items[0].huid).toBe('ABC123')
     expect(r.items[1].huid).toBe('')
   })
 
