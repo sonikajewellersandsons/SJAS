@@ -1296,6 +1296,9 @@ CREATE TABLE IF NOT EXISTS labour_job_items (
   huid       TEXT DEFAULT '',
   weight     NUMERIC(10,3) NOT NULL CHECK (weight > 0)
 );
+-- Idempotent for DBs created before the HUID column existed (CREATE TABLE
+-- IF NOT EXISTS is a no-op when the table already exists).
+ALTER TABLE labour_job_items ADD COLUMN IF NOT EXISTS huid TEXT DEFAULT '';
 
 CREATE INDEX IF NOT EXISTS idx_labour_jobs_date ON labour_jobs(date);
 CREATE INDEX IF NOT EXISTS idx_labour_jobs_customer ON labour_jobs(customer_id);
