@@ -1,5 +1,7 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { Calculator } from 'lucide-react'
+import { supabase } from '../lib/supabase'
+import ComboBox from '../components/ComboBox'
 
 const HALLMARK_TAX_PCT = 18
 
@@ -37,11 +39,72 @@ export default function PriceCalculatorPage() {
   const [weight, setWeight] = useState('10')
   const [purity, setPurity] = useState('916')
   const [labourPct, setLabourPct] = useState('10')
-  const [hallmarkCharge, setHallmarkCharge] = useState('45')
+  const [hallmarkCharge, setHallmarkCharge] = useState(() => {
+    try { return localStorage.getItem('pc_hallmarkCharge') ?? '' } catch { return '' }
+  })
+  const [masterItems, setMasterItems] = useState([])
+  const [masterItemId, setMasterItemId] = useState('')
+  const autoFilledHallmark = useRef(false)
 
   useEffect(() => {
     try { localStorage.setItem('pc_goldRate', rateInput) } catch {}
   }, [rateInput])
+
+  useEffect(() => {
+    try { localStorage.setItem('pc_hallmarkCharge', hallmarkCharge) } catch {}
+  }, [hallmarkCharge])
+
+  // Hallmark charges are maintained in Stock → Item Master. Pull them here so the
+  // calculator always reflects the shop's current hallmark price instead of a
+  // hardcoded default (which is what made this page look "stuck").
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const { data, error } = await supabase
+        .from('item_master')
+        .select('id, name, purity, hallmark_charge, material_type')
+        .eq('active', true)
+        .order('name')
+      if (cancelled || error || !data) return
+      setMasterItems(data)
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  // Most common hallmark charge among active master items — used ONCE as the
+  // initial value so a first-time visitor never sees a stale hardcoded number.
+  const masterHallmarkDefault = useMemo(() => {
+    const counts = new Map()
+    for (const m of masterItems) {
+      const v = Number(m.hallmark_charge) || 0
+      if (v > 0) counts.set(v, (counts.get(v) || 0) + 1)
+    }
+    let best = 0
+    let bestCount = 0
+    for (const [v, c] of counts) {
+      if (c > bestCount) { best = v; bestCount = c }
+    }
+    return best
+  }, [masterItems])
+
+  useEffect(() => {
+    if (autoFilledHallmark.current || hallmarkCharge !== '' || !masterHallmarkDefault) return
+    autoFilledHallmark.current = true
+    setHallmarkCharge(String(masterHallmarkDefault))
+  }, [masterHallmarkDefault, hallmarkCharge])
+
+  const hallmarkItemOptions = useMemo(
+    () => masterItems
+      .filter(m => m.material_type !== 'gold_18k')
+      .map(m => ({ value: String(m.id), label: `${m.name} (${m.purity})` })),
+    [masterItems]
+  )
+
+  function handleMasterItemChange(val) {
+    setMasterItemId(val)
+    const item = masterItems.find(m => String(m.id) === String(val))
+    if (item) setHallmarkCharge(String(Number(item.hallmark_charge) || 0))
+  }
 
   const goldRateTotal = useMemo(() => {
     const parsed = parseFloat(rateInput.replace(/,/g, ''))
@@ -147,6 +210,22 @@ export default function PriceCalculatorPage() {
         </div>
         <div style={{ padding: '1rem' }}>
           <div className="form-row" style={{ gap: '12px', marginBottom: '1rem' }}>
+            <div className="form-group" style={{ flex: '2' }}>
+              <label className="label">Hallmark from Item Master</label>
+              <ComboBox
+                options={hallmarkItemOptions}
+                value={masterItemId}
+                onChange={handleMasterItemChange}
+                freeText={false}
+                placeholder="Search an item to pull its hallmark charge..."
+              />
+              <span className="text-xs text-muted" style={{ display: 'block', marginTop: '3px' }}>
+                Hallmark charges are set in Stock → Item Master. Picking an item fills the charge below.
+              </span>
+            </div>
+          </div>
+
+          <div className="form-row" style={{ gap: '12px', marginBottom: '1rem' }}>
             <div className="form-group" style={{ flex: '1' }}>
               <label className="label">Weight (grams)</label>
               <input className="input" type="number" step="0.1" min="0" value={weight}
@@ -174,6 +253,16 @@ export default function PriceCalculatorPage() {
                 <input className="input input-group-field" type="number" min="0" step="1" value={hallmarkCharge}
                   onChange={e => setHallmarkCharge(e.target.value)} style={{ padding: '0.4rem 0.6rem', fontSize: '0.9rem' }} />
               </div>
+              {masterItemId && (() => {
+                const mi = masterItems.find(m => String(m.id) === String(masterItemId))
+                if (!mi) return null
+                const mv = Number(mi.hallmark_charge) || 0
+                return Number(hallmarkCharge) === mv ? null : (
+                  <span className="text-xs" style={{ display: 'block', marginTop: '3px', color: 'var(--orange)' }}>
+                    Master value: {fmt(mv)} — edited here only
+                  </span>
+                )
+              })()}
             </div>
           </div>
 

@@ -95,6 +95,31 @@ export default function BillingPage() {
     return () => document.removeEventListener('wheel', handler)
   }, [])
 
+  // Master items (name / purity / hallmark charge) are edited on the Stock page.
+  // Re-pull them whenever this tab regains focus or becomes visible again, so a
+  // bill left open (or open on the second laptop) can never keep billing with a
+  // stale hallmark price. Re-pulling only refreshes the picker's source — it
+  // never rewrites hallmark charges already chosen on the lines below.
+  async function refreshMasterItems() {
+    const { data, error } = await supabase
+      .from('item_master')
+      .select('id, name, hallmark_charge, purity, material_type, hsn_code')
+      .eq('active', true)
+      .order('name')
+    if (!error && data) setMasterItems(data)
+  }
+
+  useEffect(() => {
+    const onFocus = () => { refreshMasterItems() }
+    const onVisibility = () => { if (document.visibilityState === 'visible') refreshMasterItems() }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [])
+
   async function loadData(pendingEditId) {
     setLoading(true)
     try {
@@ -548,6 +573,7 @@ export default function BillingPage() {
       } else {
         if (l.labour_pct === '' || isNaN(parseFloat(l.labour_pct)) || parseFloat(l.labour_pct) < 0) return `Item #${origIdx+1}: enter a valid labour %`
         if (!l.item_id || isNaN(parseInt(l.item_id))) return `Item #${origIdx+1}: select an item`
+        if (l.hallmark_charge !== '' && l.hallmark_charge != null && (isNaN(parseFloat(l.hallmark_charge)) || parseFloat(l.hallmark_charge) < 0)) return `Item #${origIdx+1}: enter a valid hallmark charge`
       }
     }
     if (paymentMode === 'BOTH' && Math.abs(parseFloat(cashAmt || 0) + parseFloat(bankAmt || 0) - grandTotal) > 0.01) {
@@ -1342,6 +1368,7 @@ export default function BillingPage() {
                             options={masterItems.filter(m => m.material_type !== 'gold_18k').map(m => ({ value: m.id.toString(), label: `${m.name} (${m.purity})` }))}
                             value={line.item_id?.toString()}
                             onChange={val => updateLine(i, 'item_id', val)}
+                            freeText={false}
                             placeholder="Type to search item..."
                           />
                           {line.item_id && line.weight && (() => {
@@ -1401,6 +1428,22 @@ export default function BillingPage() {
                             <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Labour %</label>
                             <input className="input" type="number" step="0.1" min="0" value={line.labour_pct}
                               onChange={e => updateLine(i, 'labour_pct', e.target.value)} placeholder="10" style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
+                          </div>
+                          <div className="form-group" style={{ flex: '0.9' }}>
+                            <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Hallmark (₹)</label>
+                            <input className="input" type="number" step="0.01" min="0" value={line.hallmark_charge}
+                              onChange={e => updateLine(i, 'hallmark_charge', e.target.value)} placeholder="0" style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
+                            {(() => {
+                              const mi = masterItems.find(m => m.id === parseInt(line.item_id))
+                              if (!mi) return null
+                              const mv = Number(mi.hallmark_charge) || 0
+                              if (Number(line.hallmark_charge) === mv) return null
+                              return (
+                                <span className="text-xs" style={{ color: 'var(--orange)', fontSize: '0.6rem', whiteSpace: 'nowrap' }}>
+                                  Master: {fmt(mv)}
+                                </span>
+                              )
+                            })()}
                           </div>
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '6px' }}>
