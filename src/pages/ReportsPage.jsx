@@ -423,8 +423,9 @@ function HsnSummary({ year, addToast }) {
         for (const it of (items || [])) {
           const isSilver = it.item_id === null && (it.material_type === 'silver_925' || it.material_type === 'silver_ornaments')
           const is18k = it.item_id === null && it.material_type === 'gold_18k'
-          const hsn = isSilver ? '71131130' : is18k ? '71131913' : it.item_master?.hsn_code || 'OTHER'
-          if (!byHsn[hsn]) byHsn[hsn] = { hsn, name: it.item_master?.name || it.description_extra || (isSilver ? 'Silver' : is18k ? 'Gold 18K' : ''), weight: 0, value: 0, tax: 0 }
+          const isCoin = it.item_id === null && (it.material_type === 'gold_coin' || it.material_type === 'silver_coin')
+          const hsn = isCoin ? (it.material_type === 'gold_coin' ? '71189010' : '71189020') : isSilver ? '71131130' : is18k ? '71131913' : it.item_master?.hsn_code || 'OTHER'
+          if (!byHsn[hsn]) byHsn[hsn] = { hsn, name: it.item_master?.name || it.description_extra || (isCoin ? (it.material_type === 'gold_coin' ? 'Gold Coin' : 'Silver Coin') : isSilver ? 'Silver' : is18k ? 'Gold 18K' : ''), weight: 0, value: 0, tax: 0 }
           byHsn[hsn].weight += parseFloat(it.weight) || 0
           byHsn[hsn].value += parseFloat(it.price) || 0
           byHsn[hsn].tax += parseFloat(it.tax_amount) || 0
@@ -645,7 +646,8 @@ function OthersReport({ year, addToast }) {
           for (const it of (items || [])) {
             const isSilver = it.item_id === null && (it.material_type === 'silver_925' || it.material_type === 'silver_ornaments')
             const is18k = it.item_id === null && it.material_type === 'gold_18k'
-            const cat = isSilver ? 'Silver' : is18k ? 'Gold (18K)' : it.item_master?.category || 'Other'
+            const isCoin = it.item_id === null && (it.material_type === 'gold_coin' || it.material_type === 'silver_coin')
+            const cat = isCoin ? 'Fine Coins' : isSilver ? 'Silver' : is18k ? 'Gold (18K)' : it.item_master?.category || 'Other'
             if (!byCat[cat]) byCat[cat] = { category: cat, value: 0, tax: 0, count: 0 }
             byCat[cat].value += parseFloat(it.price) || 0
             byCat[cat].tax += parseFloat(it.tax_amount) || 0

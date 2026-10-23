@@ -5,6 +5,7 @@ import { useToast } from '../components/Toast'
 import ComboBox from '../components/ComboBox'
 import { logAction } from '../lib/audit'
 import { cleanPhone, financialYear, fyFromInvNo, invNoSeq } from '../lib/format'
+import { coinDemand, coinLabel, coinLineTotal, coinLineWeight, coinMrpFor, isCoinType } from '../lib/coins'
 import { Search, Plus, X, FileText, Eye } from 'lucide-react'
 
 const FUNCTIONS_URL = import.meta.env.VITE_SUPABASE_URL + '/functions/v1'
@@ -61,6 +62,8 @@ export default function BillingPage() {
   const [expandedLot, setExpandedLot] = useState(-1)
   const [silverStock, setSilverStock] = useState({ silver_925: 0, silver_ornaments: 0 })
   const [goldStock, setGoldStock] = useState(0)
+  const [coinStock, setCoinStock] = useState({})
+  const [coinRates, setCoinRates] = useState([])
 
   // Inward Supply vouchers (exchange adjustment)
   const [inwardVouchers, setInwardVouchers] = useState([])
@@ -148,6 +151,22 @@ export default function BillingPage() {
       if (goldPurchases) {
         setGoldStock(goldPurchases.reduce((s, p) => s + parseFloat(p.weight) - parseFloat(p.sold_weight), 0))
       }
+      // Load Fine Coin stock (pcs + grams per denomination)
+      const { data: coinPurchases } = await supabase.from('material_purchases')
+        .select('type, unit_weight, pcs, sold_pcs, weight, sold_weight')
+        .in('type', ['gold_coin', 'silver_coin'])
+      if (coinPurchases) {
+        const stock = {}
+        coinPurchases.forEach(p => {
+          const key = `${p.type}|${parseFloat(p.unit_weight)}`
+          if (!stock[key]) stock[key] = { pcs: 0, grams: 0 }
+          stock[key].pcs += (parseInt(p.pcs) || 0) - (parseInt(p.sold_pcs) || 0)
+          stock[key].grams += parseFloat(p.weight) - parseFloat(p.sold_weight)
+        })
+        setCoinStock(stock)
+      }
+      const { data: rates } = await supabase.from('coin_rates').select('id, type, unit_weight, mrp, active').eq('active', true)
+      if (rates) setCoinRates(rates)
       if (pendingEditId) {
         setEditInvoiceId(pendingEditId)
         setEditMode(true)
@@ -207,6 +226,23 @@ export default function BillingPage() {
     editOriginalItems.current = items
     setLineItems(items.map(item => {
       if (!item.item_id) {
+        if (isCoinType(item.material_type)) {
+          return {
+            item_id: 'coin',
+            description: item.description_extra || coinLabel(item.material_type),
+            weight: item.weight.toString(),
+            labour_pct: '0',
+            tax_pct: item.tax_pct != null && item.tax_pct !== undefined ? item.tax_pct.toString() : DEFAULT_TAX_PCT.toString(),
+            hallmark_charge: 0,
+            huid_enabled: false,
+            huid_code: '',
+            is_coin: true,
+            coin_type: item.material_type,
+            unit_weight: item.unit_weight != null ? item.unit_weight.toString() : '',
+            qty: item.qty != null ? item.qty.toString() : '1',
+            mrp: item.mrp != null ? item.mrp.toString() : '',
+          }
+        }
         if (item.material_type === 'gold_18k') {
           return {
             item_id: 'gold18k',
@@ -363,6 +399,15 @@ export default function BillingPage() {
   }
 
   function checkStock(itemId, weight, huidEnabled, excludeIndex, agg) {
+    // ── Fine Coins: pcs AND grams must both be available per denomination ──
+    if (itemId === 'coin') {
+      const line = lineItems[excludeIndex >= 0 ? excludeIndex : 0]
+      const key = `${line?.coin_type}|${parseFloat(line?.unit_weight)}`
+      const d = coinDemand(lineItems, editOriginalItems.current || [])[key]
+      if (!d) return { available: true }
+      const avail = coinStock[key] || { pcs: 0, grams: 0 }
+      return { available: d.pcs <= avail.pcs && d.grams <= avail.grams + 1e-6 }
+    }
     if (!itemId || !weight) return null
 
     const a = agg || {}
@@ -438,6 +483,10 @@ export default function BillingPage() {
     setLineItems([...lineItems, { item_id: 'gold18k', description: 'Gold Jewellery (18K)', weight: '', labour_pct: DEFAULT_LABOUR_PCT.toString(), tax_pct: '0', hallmark_charge: 0, huid_enabled: false, huid_code: '', is_gold_18k: true }])
   }
 
+  function addCoinLine(coinType) {
+    setLineItems([...lineItems, { item_id: 'coin', description: coinLabel(coinType), weight: '', labour_pct: '0', tax_pct: DEFAULT_TAX_PCT.toString(), hallmark_charge: 0, huid_enabled: false, huid_code: '', is_coin: true, coin_type: coinType, unit_weight: '', qty: '1', mrp: '' }])
+  }
+
   function updateLine(index, field, value) {
     const updated = lineItems.map((line, i) => {
       if (i !== index) return line
@@ -451,6 +500,7 @@ export default function BillingPage() {
           newLine.silver_rate = ''
           newLine.silver_type = ''
           newLine.is_gold_18k = false
+          newLine.is_coin = false
         }
       }
       if (field === 'huid_enabled' && value === false) {
@@ -459,6 +509,19 @@ export default function BillingPage() {
       if (field === 'silver_type') {
         newLine.description = value === 'silver_925' ? 'Silver 925' : 'Silver Ornaments'
         newLine.silver_rate = ''
+      }
+      if (newLine.is_coin) {
+        if (field === 'coin_type') {
+          newLine.description = coinLabel(value)
+          newLine.unit_weight = ''
+          newLine.mrp = ''
+        }
+        if (field === 'unit_weight') {
+          const auto = coinMrpFor(coinRates, newLine.coin_type, value)
+          if (auto != null) newLine.mrp = auto.toString()
+        }
+        // Weight per line is always unit weight × qty — never typed directly.
+        newLine.weight = coinLineWeight(newLine.unit_weight, newLine.qty).toString()
       }
       return newLine
     })
@@ -471,7 +534,7 @@ export default function BillingPage() {
   }
 
   function getFilteredLots(line) {
-    if (!line.item_id || line.is_silver || line.is_gold_18k) return []
+    if (!line.item_id || line.is_silver || line.is_gold_18k || line.is_coin) return []
     const item = masterItems.find(m => m.id === parseInt(line.item_id))
     if (!item) return []
     let lots = stockLotsByName[item.name]
@@ -486,7 +549,7 @@ export default function BillingPage() {
   const {
     linePrices, lineTotals, totalPrice, totalHc, totalTax, totalHcTax,
     discAmt, beforeAdj, afterAdj, roundOff, grandTotal,
-    stockResults, allStockAvailable, silverNet, goldNet,
+    stockResults, allStockAvailable, silverNet, goldNet, coinNet,
   } = useMemo(() => {
     // Net silver/18K demand across ALL lines (new demand minus original demand
     // in edit mode) so multiple lines can't jointly exceed available stock.
@@ -498,13 +561,19 @@ export default function BillingPage() {
       if (ln.is_silver) silverDemand[ln.silver_type] = (silverDemand[ln.silver_type] || 0) + (parseFloat(ln.weight) || 0)
       else if (ln.is_gold_18k) goldDemand += parseFloat(ln.weight) || 0
     }
+    const coinNet = coinDemand(lineItems, editOriginalItems.current || [])
     for (const o of (editOriginalItems.current || [])) {
       if (!o.item_id && o.material_type === 'gold_18k') origGoldDemand += parseFloat(o.weight) || 0
-      else if (!o.item_id && o.material_type) origSilverDemand[o.material_type] = (origSilverDemand[o.material_type] || 0) + (parseFloat(o.weight) || 0)
+      else if (!o.item_id && o.material_type && !isCoinType(o.material_type)) origSilverDemand[o.material_type] = (origSilverDemand[o.material_type] || 0) + (parseFloat(o.weight) || 0)
     }
 
     function calcLinePrice(line) {
       const w = parseFloat(line.weight) || 0
+      if (line.is_coin) {
+        const mrp = parseFloat(line.mrp) || 0
+        const qty = parseInt(line.qty, 10) || 0
+        return { ratePerGram: 0, price: coinLineTotal(mrp, qty), hc: 0 }
+      }
       if (line.is_silver) {
         const rate = parseFloat(line.silver_rate) || 0
         return { ratePerGram: rate, price: w * rate, hc: 0 }
@@ -540,7 +609,7 @@ export default function BillingPage() {
     const ro = Math.round(aa) - aa
     const sr = lineItems.map((l, i) => checkStock(l.item_id, l.weight, l.huid_enabled, i, { silverDemand, origSilverDemand, goldDemand, origGoldDemand }))
     return {
-      linePrices: lp, totalPrice: tp, totalHc: thc,
+      linePrices: lp, totalPrice: tp, totalHc: thc, coinNet,
       discAmt: da, lineTotals: lt, totalTax: tt, totalHcTax: thct,
       beforeAdj: ba, afterAdj: aa, roundOff: ro, grandTotal: aa + ro,
       stockResults: sr, allStockAvailable: lineItems.every((l, i) => !l.item_id || sr[i] === null || sr[i]?.available),
@@ -550,7 +619,7 @@ export default function BillingPage() {
       },
       goldNet: goldDemand - origGoldDemand,
     }
-  }, [lineItems, goldRate, masterItems, stockLotsByName, silverStock, goldStock, discount, adjAmt, editMode, editOriginalItems])
+  }, [lineItems, goldRate, masterItems, stockLotsByName, silverStock, goldStock, coinStock, discount, adjAmt, editMode, editOriginalItems])
 
   const savingRef = useRef(false)
 
@@ -564,6 +633,15 @@ export default function BillingPage() {
     if (validLines.length === 0) return 'Add at least one item'
     for (const l of validLines) {
       const origIdx = lineItems.indexOf(l)
+      if (l.is_coin) {
+        const unit = parseFloat(l.unit_weight)
+        const qty = parseInt(l.qty, 10)
+        const mrp = parseFloat(l.mrp)
+        if (!unit || unit <= 0) return `Item #${origIdx+1}: enter a valid weight per coin`
+        if (!qty || qty <= 0 || !/^\d+$/.test(String(l.qty).trim())) return `Item #${origIdx+1}: enter a valid coin quantity`
+        if (!mrp || mrp <= 0) return `Item #${origIdx+1}: enter a valid MRP`
+        continue
+      }
       const w = parseFloat(l.weight)
       if (!w || w <= 0) return `Item #${origIdx+1}: enter a valid weight`
       if (l.is_silver) {
@@ -705,6 +783,30 @@ export default function BillingPage() {
       const invoiceItemsData = validLines.map((line, idx) => {
         const origIdx = lineItems.indexOf(line)
         const c = lineTotals[origIdx >= 0 ? origIdx : idx]
+        if (line.is_coin) {
+          const unit = parseFloat(line.unit_weight) || 0
+          const qty = parseInt(line.qty, 10) || 0
+          return {
+            invoice_id: invId,
+            item_id: null,
+            weight: coinLineWeight(unit, qty),
+            rate_per_gram: 0,
+            price: Math.round(c.price * 100) / 100,
+            tax_amount: Math.round(c.tax * 100) / 100,
+            tax_pct: parseFloat(line.tax_pct) || 0,
+            labour_rate: 0,
+            labour_pct: 0,
+            hallmark_charge: 0,
+            huid: false,
+            huid_code: '',
+            description_extra: line.description || `${coinLabel(line.coin_type)} ${unit} g`,
+            material_type: line.coin_type,
+            qty,
+            unit_weight: unit,
+            mrp: Math.round((parseFloat(line.mrp) || 0) * 100) / 100,
+            sno: idx + 1,
+          }
+        }
         if (line.is_silver) {
           return {
             invoice_id: invId,
@@ -809,6 +911,19 @@ export default function BillingPage() {
           freshSilver.forEach(p => { stock[p.type] = (stock[p.type] || 0) + parseFloat(p.weight) - parseFloat(p.sold_weight) })
           setSilverStock(stock)
         }
+        const { data: freshCoins } = await supabase.from('material_purchases')
+          .select('type, unit_weight, pcs, sold_pcs, weight, sold_weight')
+          .in('type', ['gold_coin', 'silver_coin'])
+        if (freshCoins) {
+          const stock = {}
+          freshCoins.forEach(p => {
+            const key = `${p.type}|${parseFloat(p.unit_weight)}`
+            if (!stock[key]) stock[key] = { pcs: 0, grams: 0 }
+            stock[key].pcs += (parseInt(p.pcs) || 0) - (parseInt(p.sold_pcs) || 0)
+            stock[key].grams += parseFloat(p.weight) - parseFloat(p.sold_weight)
+          })
+          setCoinStock(stock)
+        }
         await resetForm()
       } catch (e) { console.warn('Post-save refresh failed:', e) }
     } catch (err) {
@@ -896,6 +1011,26 @@ export default function BillingPage() {
       const items = validLines.map((line, idx) => {
         const origIdx = lineItems.indexOf(line)
         const c = lineTotals[origIdx >= 0 ? origIdx : idx]
+        if (line.is_coin) {
+          const unit = parseFloat(line.unit_weight) || 0
+          const qty = parseInt(line.qty, 10) || 0
+          return {
+            item_id: null,
+            description_extra: line.description || `${coinLabel(line.coin_type)} ${unit} g`,
+            material_type: line.coin_type,
+            weight: coinLineWeight(unit, qty),
+            rate_per_gram: 0,
+            price: Math.round(c.price * 100) / 100,
+            tax_amount: Math.round(c.tax * 100) / 100,
+            hallmark_charge: 0,
+            sno: idx + 1,
+            huid: false,
+            huid_code: '',
+            qty,
+            unit_weight: unit,
+            mrp: Math.round((parseFloat(line.mrp) || 0) * 100) / 100,
+          }
+        }
         if (line.is_silver) {
           return {
             item_id: null,
@@ -1186,6 +1321,104 @@ export default function BillingPage() {
 
                     <div className="form-row" style={{ gap: '6px', alignItems: 'stretch', display: 'flex', gridTemplateColumns: 'unset' }}>
                       {(() => {
+                        if (line.is_coin) {
+                          const unit = parseFloat(line.unit_weight) || 0
+                          const qty = parseInt(line.qty, 10) || 0
+                          const mrp = parseFloat(line.mrp) || 0
+                          const key = `${line.coin_type}|${unit}`
+                          const avail = coinStock[key] || { pcs: 0, grams: 0 }
+                          const net = coinNet[key] || { pcs: 0, grams: 0 }
+                          const remPcs = avail.pcs - net.pcs
+                          const remGrams = avail.grams - net.grams
+                          return [
+                            <div key="details" style={{ flex: '1', border: '1px solid var(--border-strong, #c8c8c8)', borderRadius: 'var(--radius)', padding: '0.4rem 0.5rem', background: '#f4f4f6' }}>
+                              <div style={{ fontSize: '0.55rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: '4px' }}>Fine Coin</div>
+                              <div className="form-group" style={{ marginBottom: '6px' }}>
+                                <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Type</label>
+                                <select className="input" value={line.coin_type} onChange={e => updateLine(i, 'coin_type', e.target.value)} style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem' }}>
+                                  <option value="gold_coin">Gold Coin</option>
+                                  <option value="silver_coin">Silver Coin</option>
+                                </select>
+                              </div>
+                              <div className="form-row" style={{ gap: '6px', display: 'flex', gridTemplateColumns: 'unset' }}>
+                                <div className="form-group" style={{ flex: '1' }}>
+                                  <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Weight/coin (g)</label>
+                                  <input className="input" type="number" step="0.001" min="0" value={line.unit_weight}
+                                    onChange={e => updateLine(i, 'unit_weight', e.target.value)} placeholder="0.000" style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
+                                </div>
+                                <div className="form-group" style={{ flex: '0.7' }}>
+                                  <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Qty</label>
+                                  <input className="input" type="number" step="1" min="1" value={line.qty}
+                                    onChange={e => updateLine(i, 'qty', e.target.value)} placeholder="1" style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
+                                </div>
+                              </div>
+                              <div className="form-row" style={{ gap: '6px', display: 'flex', gridTemplateColumns: 'unset' }}>
+                                <div className="form-group" style={{ flex: '1.4' }}>
+                                  <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>MRP / coin</label>
+                                  <input className="input" type="number" step="0.01" min="0" value={line.mrp}
+                                    onChange={e => updateLine(i, 'mrp', e.target.value)} placeholder="0.00" style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
+                                </div>
+                                <div className="form-group" style={{ flex: '0.8' }}>
+                                  <label className="label" style={{ fontSize: '0.6rem', fontWeight: 600 }}>Tax %</label>
+                                  <input className="input" type="number" step="0.01" min="0" value={line.tax_pct}
+                                    onChange={e => updateLine(i, 'tax_pct', e.target.value)} style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
+                                </div>
+                              </div>
+                              {line.unit_weight && (
+                                <div style={{ marginTop: '2px' }}>
+                                  <span className={remPcs >= 0 && remGrams >= -1e-6 ? 'badge badge-green' : 'badge badge-red'} style={{ fontSize: '9px' }}>
+                                    {remPcs >= 0 && remGrams >= -1e-6
+                                      ? `✓ ${remPcs} pcs · ${remGrams.toFixed(3)}g avail`
+                                      : `✗ Only ${Math.max(0, remPcs)} pcs · ${Math.max(0, remGrams).toFixed(3)}g avail`}
+                                  </span>
+                                </div>
+                              )}
+                            </div>,
+                            <div key="rate" style={{ flex: '2', border: '1px solid var(--border-strong, #c8c8c8)', borderRadius: 'var(--radius)', padding: '0.4rem 0.5rem', background: '#f4f4f6' }}>
+                              <div className="font-mono">
+                                {mrp > 0 && qty > 0 ? (
+                                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+                                    <thead>
+                                      <tr>
+                                        <th style={{ width: '25%', border: '1px solid #d0d0d0', padding: '2px 6px', textAlign: 'center', fontWeight: 700, color: 'var(--text-muted)', background: '#eaeaea', fontSize: '0.65rem' }}>Qty</th>
+                                        <th style={{ width: '37.5%', border: '1px solid #d0d0d0', padding: '2px 6px', textAlign: 'center', fontWeight: 700, color: 'var(--text-muted)', background: '#eaeaea', fontSize: '0.65rem' }}>MRP</th>
+                                        <th style={{ width: '37.5%', border: '1px solid #d0d0d0', padding: '2px 6px', textAlign: 'center', fontWeight: 700, color: 'var(--text-muted)', background: '#eaeaea', fontSize: '0.65rem' }}>Total wt</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      <tr>
+                                        <td style={{ border: '1px solid #d0d0d0', padding: '3px 8px', textAlign: 'center', fontWeight: 600, color: 'var(--text-secondary)' }}>{qty} pcs</td>
+                                        <td style={{ border: '1px solid #d0d0d0', padding: '3px 8px', textAlign: 'center', fontWeight: 600, color: 'var(--text-secondary)' }}>{fmt(mrp)}</td>
+                                        <td style={{ border: '1px solid #d0d0d0', padding: '3px 8px', textAlign: 'center', fontWeight: 600, color: 'var(--text-secondary)' }}>{coinLineWeight(unit, qty).toFixed(3)} g</td>
+                                      </tr>
+                                    </tbody>
+                                  </table>
+                                ) : <span className="text-muted" style={{ fontSize: '0.7rem' }}>—</span>}
+                              </div>
+                              <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: '4px', marginTop: '8px' }}>Line Totals</div>
+                              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+                                <thead>
+                                  <tr>
+                                    <th style={{ width: '25%', border: '1px solid #d0d0d0', padding: '2px 6px', textAlign: 'center', fontWeight: 700, color: 'var(--text-muted)', background: '#eaeaea', fontSize: '0.65rem' }}></th>
+                                    <th style={{ width: '37.5%', border: '1px solid #d0d0d0', padding: '2px 6px', textAlign: 'center', fontWeight: 700, color: 'var(--text-muted)', background: '#eaeaea', fontSize: '0.65rem' }}>Price</th>
+                                    <th style={{ width: '37.5%', border: '1px solid #d0d0d0', padding: '2px 6px', textAlign: 'center', fontWeight: 700, color: 'var(--text-muted)', background: '#eaeaea', fontSize: '0.65rem' }}>Tax</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  <tr>
+                                    <td style={{ border: '1px solid #d0d0d0', padding: '3px 8px', textAlign: 'center', fontWeight: 700, color: '#888', fontSize: '0.7rem' }}>Coin</td>
+                                    <td style={{ border: '1px solid #d0d0d0', padding: '3px 8px', textAlign: 'center', fontWeight: 700 }}>{fmt(c.price)}</td>
+                                    <td style={{ border: '1px solid #d0d0d0', padding: '3px 8px', textAlign: 'center' }}>{fmt(c.tax)}</td>
+                                  </tr>
+                                </tbody>
+                              </table>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
+                                <span style={{ fontWeight: 700, fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: 'var(--text-secondary)' }}>Total</span>
+                                <span className="font-mono" style={{ fontWeight: 700, color: 'var(--accent)', fontSize: '0.9rem' }}>{fmt(c.total)}</span>
+                              </div>
+                            </div>
+                          ]
+                        }
                         if (line.is_silver) {
                           const w = parseFloat(line.weight) || 0
                           const rate = parseFloat(line.silver_rate) || 0
@@ -1539,7 +1772,7 @@ export default function BillingPage() {
                 )
               })}
             </div>
-            <div style={{ display: 'flex', gap: '8px', marginTop: '0.75rem' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '0.75rem' }}>
               <button type="button" className="btn btn-sm btn-outline" onClick={addLine} style={{ flex: 1 }}>
                 <Plus size={14} /> Add Item
               </button>
@@ -1548,6 +1781,12 @@ export default function BillingPage() {
               </button>
               <button type="button" className="btn btn-sm btn-outline" onClick={addSilverLine} style={{ flex: 1 }}>
                 <Plus size={14} /> Add Silver
+              </button>
+              <button type="button" className="btn btn-sm btn-outline" onClick={() => addCoinLine('gold_coin')} style={{ flex: 1 }}>
+                <Plus size={14} /> Gold Coin
+              </button>
+              <button type="button" className="btn btn-sm btn-outline" onClick={() => addCoinLine('silver_coin')} style={{ flex: 1 }}>
+                <Plus size={14} /> Silver Coin
               </button>
             </div>
           </div>

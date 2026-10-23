@@ -234,6 +234,11 @@ ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS labour_rate NUMERIC(10,2) NOT
 ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS labour_pct NUMERIC(5,2) NOT NULL DEFAULT 10;
 ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS description_extra TEXT;
 ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS material_type TEXT;
+-- Fine Coins: qty + per-coin weight + MRP per piece. weight stays total grams,
+-- price = mrp × qty, rate_per_gram = 0 (no labour/hallmark on coin lines).
+ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS qty INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS unit_weight NUMERIC(12,3);
+ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS mrp NUMERIC(12,2);
 ALTER TABLE invoice_items ALTER COLUMN item_id DROP NOT NULL;
 ALTER TABLE invoices ADD COLUMN IF NOT EXISTS gold_rate NUMERIC(10,2) NOT NULL DEFAULT 0;
 ALTER TABLE invoices ADD COLUMN IF NOT EXISTS round_off NUMERIC(10,2) NOT NULL DEFAULT 0;
@@ -769,16 +774,27 @@ CREATE TABLE IF NOT EXISTS material_purchases (
 
 ALTER TABLE material_purchases DROP COLUMN IF EXISTS rate;
 ALTER TABLE material_purchases DROP COLUMN IF EXISTS amount;
+-- Fine Coins: pieces + per-coin weight. `weight` stays the TOTAL grams
+-- (unit_weight × pcs) so every existing weight-based query keeps working.
+ALTER TABLE material_purchases ADD COLUMN IF NOT EXISTS pcs INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE material_purchases ADD COLUMN IF NOT EXISTS sold_pcs INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE material_purchases ADD COLUMN IF NOT EXISTS unit_weight NUMERIC(12,3);
 -- Migrate legacy 'silver' rows BEFORE the type CHECK is added, otherwise a
 -- leftover 'silver' row aborts schema.sql and everything after it (RLS fixes)
 -- silently never deploys.
 UPDATE material_purchases SET type = 'silver_925' WHERE type = 'silver';
 ALTER TABLE material_purchases DROP CONSTRAINT IF EXISTS material_purchases_type_check;
-ALTER TABLE material_purchases ADD CONSTRAINT material_purchases_type_check CHECK (type IN ('gold_18k', 'silver_925', 'silver_ornaments'));
+ALTER TABLE material_purchases ADD CONSTRAINT material_purchases_type_check CHECK (type IN ('gold_18k', 'silver_925', 'silver_ornaments', 'gold_coin', 'silver_coin'));
 -- Clamp oversold legacy data before the sold_weight CHECK (same abort guard).
 UPDATE material_purchases SET sold_weight = LEAST(sold_weight, weight) WHERE sold_weight > weight;
 ALTER TABLE material_purchases DROP CONSTRAINT IF EXISTS chk_mp_sold_weight;
 ALTER TABLE material_purchases ADD CONSTRAINT chk_mp_sold_weight CHECK (sold_weight >= 0 AND sold_weight <= weight);
+ALTER TABLE material_purchases DROP CONSTRAINT IF EXISTS chk_mp_sold_pcs;
+ALTER TABLE material_purchases ADD CONSTRAINT chk_mp_sold_pcs CHECK (sold_pcs >= 0 AND sold_pcs <= pcs);
+ALTER TABLE material_purchases DROP CONSTRAINT IF EXISTS chk_mp_coin_unit;
+ALTER TABLE material_purchases ADD CONSTRAINT chk_mp_coin_unit CHECK (
+  type NOT IN ('gold_coin', 'silver_coin') OR (pcs > 0 AND unit_weight > 0)
+);
 
 CREATE INDEX IF NOT EXISTS idx_material_purchases_type ON material_purchases(type);
 
@@ -796,12 +812,30 @@ CREATE TABLE IF NOT EXISTS material_sales (
   created_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Fine Coins: one row per billed coin line (rate = MRP per piece).
+ALTER TABLE material_sales ADD COLUMN IF NOT EXISTS qty INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE material_sales ADD COLUMN IF NOT EXISTS unit_weight NUMERIC(12,3);
 UPDATE material_sales SET type = 'silver_925' WHERE type = 'silver';
 ALTER TABLE material_sales DROP CONSTRAINT IF EXISTS material_sales_type_check;
-ALTER TABLE material_sales ADD CONSTRAINT material_sales_type_check CHECK (type IN ('gold_18k', 'silver_925', 'silver_ornaments'));
+ALTER TABLE material_sales ADD CONSTRAINT material_sales_type_check CHECK (type IN ('gold_18k', 'silver_925', 'silver_ornaments', 'gold_coin', 'silver_coin'));
 
 CREATE INDEX IF NOT EXISTS idx_material_sales_type ON material_sales(type);
 CREATE INDEX IF NOT EXISTS idx_material_sales_invoice ON material_sales(invoice_id);
+
+-- ─── COIN MRP RATE CARD ─────────────────────────────────
+-- One MRP per denomination so billing auto-fills the price.
+
+CREATE TABLE IF NOT EXISTS coin_rates (
+  id          BIGSERIAL PRIMARY KEY,
+  type        TEXT NOT NULL CHECK (type IN ('gold_coin', 'silver_coin')),
+  unit_weight NUMERIC(12,3) NOT NULL CHECK (unit_weight > 0),
+  mrp         NUMERIC(12,2) NOT NULL CHECK (mrp > 0),
+  active      BOOLEAN NOT NULL DEFAULT true,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (type, unit_weight)
+);
+
+CREATE INDEX IF NOT EXISTS idx_coin_rates_type ON coin_rates(type);
 
 -- ─── RPC: PROCESS MATERIAL SALE ──────────────────────────
 
@@ -813,6 +847,10 @@ DECLARE
   v_avail NUMERIC;
   v_selling NUMERIC;
   v_remaining_weight NUMERIC;
+  v_avail_pcs INTEGER;
+  v_sell_pcs INTEGER;
+  v_lot_pcs INTEGER;
+  v_coin RECORD;
   v_lot RECORD;
 BEGIN
   SELECT inv_no INTO v_inv_no FROM invoices WHERE id = p_invoice_id;
@@ -923,6 +961,58 @@ BEGIN
       END;
     END LOOP;
   END;
+
+  -- === Process Fine Coins ===
+  -- Stock is keyed by (type, unit_weight): a 5 g coin only sells from 5 g lots.
+  -- Both pieces and grams are checked because billing can carry a weight that
+  -- differs from the purchase lot's per-coin weight.
+  FOR v_coin IN
+    SELECT ii.material_type AS type, ii.unit_weight,
+           COALESCE(SUM(ii.qty), 0)::INTEGER AS qty,
+           COALESCE(SUM(ii.weight), 0) AS weight
+    FROM invoice_items ii
+    WHERE ii.invoice_id = p_invoice_id
+      AND ii.item_id IS NULL
+      AND ii.material_type IN ('gold_coin', 'silver_coin')
+    GROUP BY ii.material_type, ii.unit_weight
+  LOOP
+    SELECT COALESCE(SUM(pcs - sold_pcs), 0), COALESCE(SUM(weight - sold_weight), 0)
+      INTO v_avail_pcs, v_avail
+    FROM material_purchases
+    WHERE type = v_coin.type AND unit_weight = v_coin.unit_weight;
+
+    v_sell_pcs := v_coin.qty;
+    IF v_sell_pcs > v_avail_pcs OR v_coin.weight > v_avail THEN
+      RAISE EXCEPTION 'Insufficient % stock for % g coins: selling % pcs / % g, only % pcs / % g available',
+        CASE v_coin.type WHEN 'gold_coin' THEN 'Gold Coin' ELSE 'Silver Coin' END,
+        v_coin.unit_weight, v_sell_pcs, v_coin.weight, v_avail_pcs, v_avail;
+    END IF;
+
+    INSERT INTO material_sales (type, invoice_id, invoice_no, description, weight, rate, amount, qty, unit_weight)
+    SELECT ii.material_type, p_invoice_id, v_inv_no,
+           COALESCE(ii.description_extra,
+                    CASE ii.material_type WHEN 'gold_coin' THEN 'Gold Coin' ELSE 'Silver Coin' END),
+           ii.weight, ii.mrp, ii.price, ii.qty, ii.unit_weight
+    FROM invoice_items ii
+    WHERE ii.invoice_id = p_invoice_id
+      AND ii.item_id IS NULL
+      AND ii.material_type = v_coin.type
+      AND ii.unit_weight = v_coin.unit_weight;
+
+    -- Consume pcs and grams in lockstep, oldest lot first.
+    FOR v_lot IN SELECT id, pcs, sold_pcs, unit_weight FROM material_purchases
+                 WHERE type = v_coin.type AND unit_weight = v_coin.unit_weight AND pcs > sold_pcs
+                 ORDER BY created_at ASC, id ASC
+    LOOP
+      IF v_sell_pcs <= 0 THEN EXIT; END IF;
+      v_lot_pcs := LEAST(v_lot.pcs - v_lot.sold_pcs, v_sell_pcs);
+      UPDATE material_purchases
+         SET sold_pcs = sold_pcs + v_lot_pcs,
+             sold_weight = sold_weight + v_lot_pcs * v_lot.unit_weight
+       WHERE id = v_lot.id;
+      v_sell_pcs := v_sell_pcs - v_lot_pcs;
+    END LOOP;
+  END LOOP;
 END;
 $$;
 
@@ -934,6 +1024,9 @@ RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pub
 DECLARE
   v_type TEXT;
   v_remaining NUMERIC;
+  v_coin RECORD;
+  v_remaining_pcs INTEGER;
+  v_lot_pcs INTEGER;
   v_lot RECORD;
 BEGIN
   -- Release sold_weight per type using reverse-FIFO (newest lot first),
@@ -955,6 +1048,30 @@ BEGIN
           UPDATE material_purchases SET sold_weight = sold_weight - v_deduct WHERE id = v_lot.id;
           v_remaining := v_remaining - v_deduct;
         END;
+      END LOOP;
+    END IF;
+  END LOOP;
+
+  -- Fine Coins: release pcs and grams per denomination, newest lot first.
+  FOR v_coin IN
+    SELECT type, unit_weight, COALESCE(SUM(qty), 0)::INTEGER AS qty
+    FROM material_sales
+    WHERE invoice_id = p_invoice_id AND type IN ('gold_coin', 'silver_coin')
+    GROUP BY type, unit_weight
+  LOOP
+    v_remaining_pcs := v_coin.qty;
+    IF v_remaining_pcs > 0 THEN
+      FOR v_lot IN SELECT id, sold_pcs, unit_weight FROM material_purchases
+                   WHERE type = v_coin.type AND unit_weight = v_coin.unit_weight AND sold_pcs > 0
+                   ORDER BY id DESC
+      LOOP
+        IF v_remaining_pcs <= 0 THEN EXIT; END IF;
+        v_lot_pcs := LEAST(v_lot.sold_pcs, v_remaining_pcs);
+        UPDATE material_purchases
+           SET sold_pcs = sold_pcs - v_lot_pcs,
+               sold_weight = GREATEST(0, sold_weight - v_lot_pcs * v_lot.unit_weight)
+         WHERE id = v_lot.id;
+        v_remaining_pcs := v_remaining_pcs - v_lot_pcs;
       END LOOP;
     END IF;
   END LOOP;
@@ -996,6 +1113,7 @@ ALTER TABLE settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE material_purchases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE material_sales ENABLE ROW LEVEL SECURITY;
+ALTER TABLE coin_rates ENABLE ROW LEVEL SECURITY;
 
 -- Drop all existing policies first (for idempotent re-runs)
 DO $$ BEGIN
@@ -1227,6 +1345,23 @@ CREATE POLICY material_sales_write ON material_sales FOR INSERT WITH CHECK (
 DROP POLICY IF EXISTS material_sales_delete ON material_sales;
 CREATE POLICY material_sales_delete ON material_sales FOR DELETE USING (
   has_permission('allow_billing')
+);
+-- Coin MRP rate card: read by anyone who bills/reports/sees stock, write by stock editors
+DROP POLICY IF EXISTS coin_rates_read ON coin_rates;
+CREATE POLICY coin_rates_read ON coin_rates FOR SELECT USING (
+  has_permission('allow_billing') OR has_permission('allow_reports') OR has_permission('allow_stock_view')
+);
+DROP POLICY IF EXISTS coin_rates_write ON coin_rates;
+CREATE POLICY coin_rates_write ON coin_rates FOR INSERT WITH CHECK (
+  has_permission('allow_stock_edit')
+);
+DROP POLICY IF EXISTS coin_rates_update ON coin_rates;
+CREATE POLICY coin_rates_update ON coin_rates FOR UPDATE USING (
+  has_permission('allow_stock_edit')
+);
+DROP POLICY IF EXISTS coin_rates_delete ON coin_rates;
+CREATE POLICY coin_rates_delete ON coin_rates FOR DELETE USING (
+  has_permission('allow_stock_edit')
 );
 
 -- ─── CHECK CONSTRAINTS ────────────────────────────────

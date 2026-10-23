@@ -18,7 +18,9 @@ interface Invoice {
   payment_mode: string; cash_amt: number; bank_amt: number
   gold_rate: number; irn: string | null
 }
-interface InvItem { id: number; item_id: number | null; weight: number; rate_per_gram: number; price: number; tax_amount: number; hallmark_charge: number; sno: number; huid: boolean; huid_code: string; description_extra?: string; material_type?: string; item_master?: { name: string; hsn_code: string; purity: string } | null }
+interface InvItem { id: number; item_id: number | null; weight: number; rate_per_gram: number; price: number; tax_amount: number; hallmark_charge: number; sno: number; huid: boolean; huid_code: string; description_extra?: string; material_type?: string; qty?: number; unit_weight?: number; mrp?: number; item_master?: { name: string; hsn_code: string; purity: string } | null }
+const COIN_HSN: Record<string, string> = { gold_coin: '71189010', silver_coin: '71189020' }
+const coinLabel = (t?: string) => t === 'gold_coin' ? 'Gold Coin' : t === 'silver_coin' ? 'Silver Coin' : ''
 interface DiamondItem { id: number; code: string; description: string; weight: number; mrp: number; hallmark_charge: number; tax_amount: number }
 interface Customer { id: number; name: string; address: string; phone: string; state: string; gstin: string; pan: string; pincode: string }
 interface Settings { [key: string]: any }
@@ -191,7 +193,7 @@ function buildHtml(inv: Invoice, items: InvItem[], diamonds: DiamondItem[], cust
   function hsnRows() {
     const hsnMap = new Map<string, { taxable: number; tax: number }>()
     for (const it of items) {
-      const hsn = it.material_type === 'silver_925' || it.material_type === 'silver_ornaments' ? '71131130' : it.material_type === 'gold_18k' ? '71131913' : it.item_master?.hsn_code || '71131913'
+      const hsn = it.material_type && COIN_HSN[it.material_type] ? COIN_HSN[it.material_type] : it.material_type === 'silver_925' || it.material_type === 'silver_ornaments' ? '71131130' : it.material_type === 'gold_18k' ? '71131913' : it.item_master?.hsn_code || '71131913'
       const existing = hsnMap.get(hsn) || { taxable: 0, tax: 0 }
       existing.taxable += Number(it.price)
       existing.tax += Number(it.tax_amount)
@@ -214,6 +216,9 @@ function buildHtml(inv: Invoice, items: InvItem[], diamonds: DiamondItem[], cust
   }
 
   function itemDesc(it: InvItem): string {
+    if (!it.item_id && it.material_type && COIN_HSN[it.material_type]) {
+      return esc(it.description_extra || coinLabel(it.material_type)) + ` <span class="sm">(${it.qty || 0} pcs &times; ${fmtWt(it.unit_weight || 0)} gm)</span>`
+    }
     if (!it.item_id && it.description_extra) return esc(it.description_extra)
     let d = esc(it.item_master?.name || 'Item')
     const parts: string[] = []
@@ -233,15 +238,16 @@ function buildHtml(inv: Invoice, items: InvItem[], diamonds: DiamondItem[], cust
   }
 
   const lineRows = items.map((it, i) => {
-    const isSilver = !it.item_id && it.material_type !== 'gold_18k'
+    const isCoin = !it.item_id && !!it.material_type && !!COIN_HSN[it.material_type]
+    const isSilver = !it.item_id && !isCoin && it.material_type !== 'gold_18k'
     const isGold18k = !it.item_id && it.material_type === 'gold_18k'
     return `
 <tr class="datarow">
   <td class="c">${i + 1}</td>
   <td><span class="b">${itemDesc(it)}</span></td>
-  <td class="c">${isSilver ? '71131130' : isGold18k ? '71131913' : esc(it.item_master?.hsn_code || '')}</td>
+  <td class="c">${isCoin ? COIN_HSN[it.material_type!] : isSilver ? '71131130' : isGold18k ? '71131913' : esc(it.item_master?.hsn_code || '')}</td>
   <td class="r" style="white-space: nowrap;">${fmtWt(it.weight)} gm</td>
-  <td class="r">${isSilver ? '&#8377;' + fmt(it.rate_per_gram) : '&#8377;' + fmt(it.rate_per_gram)}</td>
+  <td class="r">&#8377;${fmt(isCoin ? (it.mrp || 0) : it.rate_per_gram)}</td>
   <td class="r b">&#8377;${fmt(it.price)}</td>
 </tr>`}).join('\n')
 

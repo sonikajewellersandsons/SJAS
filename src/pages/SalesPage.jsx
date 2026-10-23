@@ -84,10 +84,10 @@ export default function SalesPage() {
     if (tab === 'materials') {
       if (matFiltered.length === 0) { addToast('Nothing to export', 'warning'); return }
       downloadCsv(`material_sales_${new Date().toISOString().slice(0, 10)}.csv`,
-        ['Date', 'Type', 'Description', 'Weight (g)', 'Rate', 'Amount', 'Invoice'],
+        ['Date', 'Type', 'Description', 'Qty', 'Weight (g)', 'Rate', 'Amount', 'Invoice'],
         matFiltered.map(s => [
           s.created_at ? s.created_at.slice(0, 10) : '', s.type || '',
-          s.description || '', Number(s.weight || 0).toFixed(3),
+          s.description || '', s.qty ? s.qty : '', Number(s.weight || 0).toFixed(3),
           s.rate != null ? Number(s.rate).toFixed(2) : '', Number(s.amount || 0).toFixed(2),
           s.invoice_no || '',
         ]))
@@ -266,6 +266,7 @@ export default function SalesPage() {
                     <th>Date</th>
                     <th>Type</th>
                     <th>Description</th>
+                    <th>Qty</th>
                     <th>Weight</th>
                     <th>Rate</th>
                     <th>Amount</th>
@@ -277,8 +278,9 @@ export default function SalesPage() {
                     <tr key={s.id}>
                       <td className="text-xs text-muted">{i + 1}</td>
                       <td className="text-sm text-secondary">{s.created_at?.slice(0, 10) || '—'}</td>
-                      <td><span className={`badge ${s.type === 'gold_18k' ? 'badge-gold' : 'badge-silver'}`} style={{ fontSize: '0.65rem' }}>{s.type === 'gold_18k' ? '18K' : s.type === 'silver_925' ? '925' : 'Ornaments'}</span></td>
+                      <td><span className={`badge ${s.type === 'gold_18k' || s.type === 'gold_coin' ? 'badge-gold' : 'badge-silver'}`} style={{ fontSize: '0.65rem' }}>{s.type === 'gold_18k' ? '18K' : s.type === 'gold_coin' ? 'Gold Coin' : s.type === 'silver_coin' ? 'Silver Coin' : s.type === 'silver_925' ? '925' : 'Ornaments'}</span></td>
                       <td style={{ fontWeight: 600, fontSize: '0.75rem' }}>{s.description || '—'}</td>
+                      <td className="font-mono text-xs">{s.qty ? `${s.qty} pcs` : '—'}</td>
                       <td className="font-mono text-xs">{Number(s.weight).toFixed(3)}</td>
                       <td className="font-mono text-xs">{s.rate ? fmt(s.rate) : '—'}</td>
                       <td className="font-mono text-xs">{fmt(s.amount)}</td>
@@ -290,7 +292,7 @@ export default function SalesPage() {
                     </tr>
                   ))}
                   {matFiltered.length === 0 && (
-                    <tr><td colSpan={8}><div className="empty-state"><p>No material sales found</p></div></td></tr>
+                    <tr><td colSpan={9}><div className="empty-state"><p>No material sales found</p></div></td></tr>
                   )}
                 </tbody>
               </table>

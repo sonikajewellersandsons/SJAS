@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { Printer, X } from 'lucide-react'
+import { COIN_HSN, coinLabel, isCoinType } from '../lib/coins'
 
 function fmt(n) {
   return '₹' + (Number(n) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -93,19 +94,20 @@ export default function InvoiceModal({ show, invoice, lineItems: rawItems, loadi
                     const goldRate = parseFloat(invoice.gold_rate) || 0
                     const goldPerGm = goldRate / 10
                     return items.map(item => {
-                      const isSilver = !item.item_id && item.material_type !== 'gold_18k'
+                      const isCoin = !item.item_id && isCoinType(item.material_type)
+                      const isSilver = !item.item_id && !isCoin && item.material_type !== 'gold_18k'
                       const isGold18k = !item.item_id && item.material_type === 'gold_18k'
                       const rate = parseFloat(item.rate_per_gram) || 0
-                      const labour = goldPerGm > 0 && !isGold18k ? Math.max(0, rate - goldPerGm) : 0
+                      const labour = goldPerGm > 0 && !isGold18k && !isCoin ? Math.max(0, rate - goldPerGm) : 0
                       return (
                         <tr key={item.id}>
                           <td className="text-xs text-secondary">{item.sno}</td>
-                          <td style={{ fontWeight: 600, fontSize: '0.75rem' }}>{isSilver ? (item.description_extra || 'Quick Silver') : (item.item_master?.name || item.description_extra || `Item #${item.item_id}`)}</td>
-                          <td className="font-mono text-xs">{isSilver || isGold18k ? '—' : (item.item_master?.hsn_code || '—')}</td>
+                          <td style={{ fontWeight: 600, fontSize: '0.75rem' }}>{isCoin ? `${item.description_extra || coinLabel(item.material_type)} (${item.qty} pcs × ${Number(item.unit_weight).toFixed(3)} g)` : isSilver ? (item.description_extra || 'Quick Silver') : (item.item_master?.name || item.description_extra || `Item #${item.item_id}`)}</td>
+                          <td className="font-mono text-xs">{isCoin ? COIN_HSN[item.material_type] : isSilver || isGold18k ? '—' : (item.item_master?.hsn_code || '—')}</td>
                           <td className="font-mono text-xs">{Number(item.weight).toFixed(3)}</td>
                           <td className="font-mono text-xs" style={{ lineHeight: 1.4 }}>
-                            <div>₹{num(rate)}</div>
-                            {!isSilver && goldPerGm > 0 && (
+                            <div>{isCoin ? `₹${num(item.mrp)} × ${item.qty}` : `₹${num(rate)}`}</div>
+                            {!isSilver && !isCoin && goldPerGm > 0 && (
                               <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
                                 {isGold18k
                                   ? `(18K ₹${num(goldPerGm * 18 / 22)} + L ${item.labour_pct ?? 10}%)`
